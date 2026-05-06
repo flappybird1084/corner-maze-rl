@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.venv
+ai-venv/
+.vscode/
+.DS_Store
+CLAUDE.md
