@@ -1,0 +1,150 @@
+# constants.py
+
+# Environment constants
+# Position variables (compass-aligned: north = decreasing y)
+CORNER_POSES = [
+    (10, 10, 0),
+    (10, 10, 1),
+    (2, 10, 1),
+    (2, 10, 2),
+    (2, 2, 2),
+    (2, 2, 3),
+    (10, 2, 3),
+    (10, 2, 0),
+]
+WELL_ENTRY_POSES_LEFT = [
+    (10, 10, 1),
+    (2, 10, 2),
+    (2, 2, 3),
+    (10, 2, 0),
+]
+WELL_ENTRY_POSES_RIGHT = [
+    (10, 10, 0),
+    (2, 10, 1),
+    (2, 2, 2),
+    (10, 2, 3),
+]
+INTERSECTIONS = [
+    (11, 1),
+    (1, 1),
+    (10, 2),
+    (10, 6),
+    (10, 10),
+    (6, 2),
+    (6, 6),
+    (6, 10),
+    (2, 2),
+    (2, 6),
+    (2, 10),
+    (11, 11),
+    (1, 11),
+]
+CORNERS = [(10, 10), (2, 10), (2, 2), (10, 2)]
+WELL_EXIT_POSES = [
+    (11, 1, 2),
+    (11, 11, 3),
+    (1, 11, 0),
+    (1, 1, 1),
+]
+
+# Grid variables
+BARRIER_LOCATIONS = [
+    (10, 5),
+    (9, 6),
+    (10, 7),
+    (7, 10),
+    (6, 9),
+    (5, 10),
+    (2, 7),
+    (3, 6),
+    (2, 5),
+    (5, 2),
+    (6, 3),
+    (7, 2),
+    (7, 6),
+    (6, 7),
+    (5, 6),
+    (6, 5),
+]
+CUE_LOCATIONS = [(11, 6), (6, 11), (1, 6), (6, 1)]
+TRIGGER_LOCATIONS = [
+    (10, 4),
+    (10, 8),
+    (8, 10),
+    (4, 10),
+    (2, 8),
+    (2, 4),
+    (4, 2),
+    (8, 2),
+    (9, 6),
+    (6, 9),
+    (3, 6),
+    (6, 3),
+]
+WELL_LOCATIONS = [(11, 11), (1, 11), (1, 1), (11, 1)]
+
+# Pretrial: dead-end trigger positions per arm (north=0, east=1, south=2, west=3)
+PRETRIAL_TRIGGER_POSITIONS = [(6, 2), (10, 6), (6, 10), (2, 6)]
+
+# Minimum steps in pretrial before trigger becomes active
+PRETRIAL_MIN_STEPS = 7
+
+# State type constants (grid_configuration_sequence[i][0])
+STATE_BASE     = 0
+STATE_EXPA     = 1
+STATE_EXPB     = 2
+STATE_PRETRIAL = 3
+STATE_TRIAL    = 4
+STATE_ITI      = 5
+
+# Action constants
+ACTION_ENTER_WELL = 3  # enter reward well arm
+ACTION_PAUSE = 4       # no-op action
+
+# Reward scoring variables for RL model
+STEP_FORWARD_COST = -0.0005 # -0.0005   # forward, well entry, pause
+STEP_TURN_COST = -0.001 # -0.001      # left/right turns (discourages spinning)
+WELL_REWARD_SCR = 1.061 # 1.061
+
+# Session scoring variables to track progress of agent
+ACQUISITION_SESSION_TRIALS = 32
+CRITERION_SCORE_THRESHOLD = 0.72
+CRITERION_CONSECUTIVE_REQUIRED = 2
+
+# Exposure session constants (expa)
+EXPOSURE_ITI_STD = 10  # std dev for Gaussian noise on ITI step count
+EXPOSURE_ITI_STEPS = 45
+EXPOSURE_MAX_STEPS = 1920
+EXPOSURE_NUM_REWARDS = 32
+
+# Exposure session 2 constants (expb)
+EXPB_ACCLIMATION_STEPS = 60
+EXPB_BARRIER_DELAY_STEPS = 30
+EXPB_MAX_STEPS = 2340
+EXPB_NUM_REWARDS = 33
+
+# View variables 
+AGENT_VIEW_SIZE = 21
+AGENT_VIEW_SIZE_SCALE = 1
+VIEW_TILE_SIZE = 1
+AGENT_VIEW_BEHIND = 7
+CELL_VIEW_BEHIND = 7
+
+# Trial sequence generation constants
+NUM_ARMS = 4
+NO_CUE = 4  # cue index value meaning "no cue present"
+THREEPEAT_MIN_SPACING = 16
+ROUTE_LL, ROUTE_RR, ROUTE_RL, ROUTE_LR = 0, 1, 2, 3
+GOAL_LOCATION_MAP = {'NE': 0, 'SE': 1, 'SW': 2, 'NW': 3}
+
+# Embedding observation mode
+EMBEDDING_PARQUET_PATH = 'data/dataframes/dual-indep-20260319-222411-embeddings-allposes.parquet'
+EMBEDDING_DIM = 60
+EYE_IMG_SIZE = 128  # 128x128 grayscale images
+
+# Stereo observation mode
+STEREO_IMG_SIZE = 96
+STEREO_DATASET_PATH = 'data/datasets/base-views-tight-dark-loose-light-consolidaed-96-ds'
+
+# Realtime viewing variables
+RENDER_FPS = 30
