@@ -35,7 +35,7 @@
 ## 3. Repo layout
 
 ```
-corner-maze-dt/
+corner-maze-rl/
 ├── README.md                            # students: install + 5-min quickstart
 ├── pyproject.toml                       # pip-installable package
 ├── colab/
@@ -46,7 +46,7 @@ corner-maze-dt/
 │   ├── 05_train_ppo.ipynb               # PPO baseline
 │   ├── 06_train_sr.ipynb                # SR baseline
 │   └── 07_compare_models.ipynb          # IQM, performance profiles, drawdown
-├── src/corner_maze_dt/
+├── src/corner_maze_rl/
 │   ├── env/                             # trimmed env + constants + trial_seq
 │   ├── data/
 │   │   ├── load.py                      # DuckDB queries against 3-table dataset
@@ -151,7 +151,7 @@ class StateEncoder(Protocol):
 | `grid_cells` | 60 | port of [notebooks/DatasetBuilder.ipynb](../notebooks/DatasetBuilder.ipynb) cell 1 | No (fixed neural code) | 5 modules × 12 phase bins, von Mises directional tuning. |
 | `visual_cnn` | 60 | port of [notebooks/Minigrid_Maze_Yoked_Training.ipynb](../notebooks/Minigrid_Maze_Yoked_Training.ipynb) cells 11–12 | Pretrained ships; optional retrain | Local-view PNGs → 60D latent. |
 | `one_hot_pose` | 196 | new | No | 196-tile one-hot (matches existing tabular setup). |
-| `reward_history` | 4·n_wm | port from [custom_rl.py](../src/custom_rl.py) `generate_state_vector()` | No | Decaying timers per well; injects partial observability. |
+| `reward_history` | 4·n_wm_units (40 default) | port from legacy `src/rl/custom_rl.py::generate_state_vector()` | No | Decaying timers per well; injects partial observability. `n_wm_units = 10` in legacy (configurable); shared by tabular PPO and SR paths — *not* SR-only despite the working-memory framing. |
 | `egocentric_image` | 21×21×3 | env's native obs | No | For CnnPolicy variants. |
 
 ### 5.3 Composition
@@ -169,7 +169,7 @@ observation_mode: "vector"    # uses encoder registry, runs MLP/transformer
 # or
 observation_mode: "image"     # raw 21×21×3, runs CnnPolicy
 ```
-The env already supports both modes via [src/sb3_agents.py](../src/sb3_agents.py)'s wrappers. We expose them through a single switch.
+The env already supports both modes via legacy `src/rl/sb3_agents.py`'s wrappers. We expose them through a single switch. **Egocentric image is used standalone (CnnPolicy / image branch only)** — it is not composed with the 60-D vector encoders. The `observation_mode` switch picks one or the other; encoder composition (§5.3) only applies to vector encoders.
 
 ## 6. Models
 
@@ -199,10 +199,10 @@ Adapted from [DTtrainer.ipynb](../2S2C_task/colab/DTtrainer.ipynb) with these ch
 - Variable context size, default 64.
 
 ### 6.3 PPO (`models/ppo.py`)
-Adapted from [src/custom_rl.py](../src/custom_rl.py) `PPOAgent`. Generic over `encoder.output_dim`. Add SB3 path for students who want CnnPolicy/MaskablePPO.
+Adapted from legacy `src/rl/custom_rl.py::PPOAgent`. Generic over `encoder.output_dim`. Add SB3 path for students who want CnnPolicy/MaskablePPO.
 
 ### 6.4 SR (`models/sr.py`)
-Adapted from [src/custom_rl.py](../src/custom_rl.py) `SRAgent`. Document the [SR yoked negative results](../md-files/sr-yoked-negative-results.md) up front so students don't expect it to work — it's an instructive failure case (see "negative results" framing below).
+Adapted from legacy `src/rl/custom_rl.py::SRAgent`. Document the [SR yoked negative results](sr-yoked-negative-results.md) up front so students don't expect it to work — it's an instructive failure case (see "negative results" framing below).
 
 ## 7. Run management & saving
 
@@ -231,7 +231,7 @@ runs/{model}_{session_type}_{timestamp}/run_{i}/
 ### 7.3 Student workflow
 **Recommended:** clone repo locally → `pip install -e .` → open in VS Code → connect Colab to the local folder for GPU bursts. Runs save to local `runs/` which survives Colab disconnects.
 
-**Colab-only fallback:** `pip install git+https://github.com/<user>/corner-maze-dt.git` → mount Drive → set `RUNS_DIR=/content/drive/MyDrive/.../runs`. Same code, just a different output path.
+**Colab-only fallback:** `pip install git+https://github.com/<user>/corner-maze-rl.git` → mount Drive → set `RUNS_DIR=/content/drive/MyDrive/.../runs`. Same code, just a different output path.
 
 Both paths documented in README; "VS Code + Colab kernel" is the recommended primary route.
 
@@ -249,34 +249,54 @@ Track per-session `perfect_trial_count` (0–32). After each session, evaluate:
 ```python
 # Inputs: scores = [s_0, s_1, ..., s_n]   (per-session perfect-trial count)
 
-WARMUP = 10                  # never kill before this
-SLOPE_WINDOW = 10            # regression window for "creeping" detection
-FLAT_SLOPE_EPS = 0.05        # trials/session — below this is "flat"
-ABSOLUTE_FLOOR = 4           # if mean of last window < this, eligible to kill
-DEAD_WINDOW = 8              # if no successful trial in last K sessions, kill
-HARD_CAP = 80                # never run past this
+WARMUP            = 10        # never kill before this
+SLOPE_WINDOW      = 10        # regression window for "creeping" detection
+FLAT_SLOPE_EPS    = 0.05      # trials/session — slope below this is "not learning"
+ABSOLUTE_FLOOR    = 4         # mean of last window must be < this to be eligible to kill
+DEAD_WINDOW       = 8         # if no successful trial in last K sessions, kill
+CRITERION_MEAN    = 24        # 75% perfect (24/32) — declared learned, hand off to positive early-stop
+HARD_CAP          = 80        # never run past this
 
 if n < WARMUP:
     return CONTINUE
 
 if all(s == 0 for s in scores[-DEAD_WINDOW:]):
-    return KILL("dead — no successful trial in {DEAD_WINDOW} sessions")
+    return KILL(f"dead — no successful trial in {DEAD_WINDOW} sessions")
 
 window = scores[-SLOPE_WINDOW:]
 slope = linear_regression_slope(range(len(window)), window)
 recent_mean = np.mean(window)
 
+# Kill on flat-or-declining + low-floor.
+# Note: condition is `slope < FLAT_SLOPE_EPS` (asymmetric, NOT abs(slope)).
+# A clearly declining curve (negative slope) should also be killed.
+# A creeping-up curve has slope > FLAT_SLOPE_EPS and survives.
 if slope < FLAT_SLOPE_EPS and recent_mean < ABSOLUTE_FLOOR and n >= WARMUP + SLOPE_WINDOW:
     return KILL(f"flat: slope={slope:.3f}, mean={recent_mean:.1f} after {n} sessions")
 
-if recent_mean >= 24:        # high success — let early-stop on positive criterion handle
-    return CRITERION_MET
+if recent_mean >= CRITERION_MEAN:
+    return CRITERION_MET    # let positive-criterion early stop handle it
 
 if n >= HARD_CAP:
     return KILL("hard cap reached")
 
 return CONTINUE
 ```
+
+**What's being detected.** The intent is "the curve isn't going up." We kill when the recent slope falls below `FLAT_SLOPE_EPS` *and* the recent mean is still below `ABSOLUTE_FLOOR`. The `ABSOLUTE_FLOOR` gate is what protects a model that has *learned* but is plateauing high (slope drops to ~0 because the curve saturated near max — that's success, not failure).
+
+**Test-curve coverage** — the unit tests should assert correct decisions across these canonical cases:
+
+| Curve shape | Expected decision |
+|-------------|-------------------|
+| All zeros for ≥ DEAD_WINDOW sessions | KILL (dead) |
+| Flat at low value (e.g., constant 2 for 20+ sessions) | KILL (flat) |
+| Slow creep low (2 → 5 over 15 sessions, slope ≈ 0.2) | CONTINUE |
+| Fast creep low (2 → 12 over 10 sessions) | CONTINUE |
+| Plateaued high (saturating near 28) | CRITERION_MET |
+| Declining (e.g., 8 → 2 over 10 sessions, slope < 0) | KILL (flat — covers regression) |
+| Noisy-flat zero-mean signal | KILL once WARMUP+SLOPE_WINDOW reached |
+| n < WARMUP regardless of shape | CONTINUE |
 
 ### 8.3 Why these defaults
 - **Linear regression on a window** is the cheapest way to test "creeping up vs. flat" while ignoring noise. A purely-flat curve has slope ≈ 0; a curve creeping from 2 → 6 over 10 sessions has slope ≈ 0.4.
@@ -306,7 +326,24 @@ The yoked dataset's `session_type` column holds experiment-design names; the sam
 | `Dark Train` | `PI+VC f2 no cue` | `PI acquisition` | — (TBD) |
 | `Fixed Cue 1 Twist` | TBD | TBD | TBD |
 
-**Open data points:** `Fixed Cue 1 Twist` mapping not yet provided; VC × Dark Train cell empty. Resolve before locking; treat unknowns as "skip this session in this group's sequence" with a warning.
+**Open data points:**
+- `Fixed Cue 1 Twist` (all groups) — **TODO**, defer; not blocking initial build. Skip with warning until mapping is provided.
+- `VC × Dark Train` — cell empty, mark TODO; skip with warning.
+
+Treat any unmapped (group, yoked_session_type) pair as "skip with warning" so the runner is robust to incomplete tables.
+
+### 9.1.1 Subject selection
+
+**One rat per training run.** The runner takes a `--subject CM###` flag; the chosen rat must belong to the chosen training group's roster (see [maze-behavior-spec.md §Subject IDs](maze-behavior-spec.md)). Nothing is special about any single rat — students pick from the group roster, and reproducibility hinges on (subject, seed, dataset_hash) being captured in `run_config.json`.
+
+**Group/subject must match — enforced, not just convention.** A PI+VC subject must run the PI+VC sequence; a VC subject must run the VC sequence; etc. The runner reads `subjects.parquet` (legacy field: `training_group`), looks up the `--subject`'s group, and:
+
+- If `--training-group` is omitted, infer it from the subject's row.
+- If `--training-group` is given and doesn't match the subject's group, fail fast with a clear error (no silent override). E.g.: `--subject CM005 --training-group vc` → error: "CM005 is in PI+VC; cannot run VC acquisition."
+
+The yoked dataset only contains sessions actually run by each rat, so silently mismatching would either error out further downstream (no rows returned) or — worse — train on the wrong session_type rows. Fail at config-validation time instead.
+
+A future "batch design" mode could train on multiple rats jointly within one group; out of scope for the initial build. Cross-group batches would not be valid.
 
 ### 9.2 Student-facing choices
 
@@ -413,7 +450,8 @@ The yoking pipeline stays in `corner-maze-rl-legacy/yoking/`. This repo *consume
 data/yoked/dataset/                                  (copied from legacy, read-only)
   ├── subjects.parquet
   ├── sessions.parquet
-  └── actions_synthetic_pretrial.parquet
+  ├── actions_synthetic_pretrial.parquet             # primary input (5-action aligned)
+  └── actions_real_pretrial.parquet                  # alt variant; legacy ships both, copy-only for parity
                 ↓ scripts/build_returns_dataset.py    (this repo)
 data/yoked/dataset/actions_with_returns.parquet      (new — adds reward + RTG columns)
 ```
@@ -437,29 +475,39 @@ A new model may add a *new* obs key (env-side change). The pipeline above the en
 
 In priority order:
 
-1. **Repo name** — public GitHub, need a name before `pyproject.toml`. See suggestions in conversation.
+1. **Per-group session sequence ordering** — the (group, yoked_session_type) → env_paradigm *mapping* is in §9.1, but the *order* in which a group's training arc runs (e.g., does PI+VC always go rotate → novel → no_cue, or different?) is not yet specified. Required for `data/session_types.py` and `train/runner.py` (Phase 2). **Not blocking Phase 1.**
 
-2. **Complete session_type mapping for two cells** — `Fixed Cue 1 Twist` (all groups) and `Dark Train × VC` are still TBD. Quick query against the analysis-side data; not a blocker for first-pass build (we can ship with `pi_vc` only).
-
-3. **Decide which env paradigms make up each group's full sequence** — the user gave the *mapping* but not the *order* of sessions within each group's training arc (e.g., does PI+VC always run rotate → novel → no_cue, or different?). Required for the runner to advance through sessions correctly.
+2. **TODO: complete two empty mapping cells** — `Fixed Cue 1 Twist` (all groups) and `Dark Train × VC`. Defer; runner skips unmapped pairs with a warning. Resolve before headline runs.
 
 ### Closed (this iteration)
 
+- ~~Repo / package name~~ — repo `corner-maze-rl`, Python package `corner_maze_rl` (matches repo for student clarity). Decided 2026-05-05.
 - ~~PI+VC_f1 data~~ — separate subjects (CM057–064), different correct routes, **not yet yoked**. Stub the option, raise `NotImplementedError`. Yoking-pipeline extension scheduled for later.
 - ~~Positional encoding choice~~ — keep flexible: 4 styles (`learned`, `sinusoidal`, `spatial`, `none`) ship out of the box. Default `learned`.
 - ~~Repo hosting~~ — public GitHub confirmed.
 - ~~Seed count for headline runs~~ — N=30 for `headline` profile, N=5 for `pilot` (the default), N=10–20 for `compare`. Implemented as `--profile` flag.
+- ~~Subject selection~~ — one rat per run via `--subject CM###`; pick any rat from the chosen training group's roster (see §9.1.1). Decided 2026-05-05.
 
 ## 14. Phased build order
 
 **Phase 0 — pre-build investigation (1 session)**
 - Resolve open questions 1, 2, 3 above. Update this plan.
 
-**Phase 1 — foundation (independent, parallelizable)**
-- Port `encoders/grid_cells.py` from `DatasetBuilder.ipynb` cell 1.
-- Write `data/compute_returns.py` + `scripts/build_returns_dataset.py`.
-- Write `train/kill_switch.py` + tests.
-- Port `utils/run_io.py` from `seed_utils.py`.
+**Phase 1 — foundation**
+
+Order:
+
+1. **`utils/run_io.py`** (port from legacy `src/rl/seed_utils.py`) — first, because it sets up the package skeleton (`pyproject.toml`, `src/corner_maze_rl/`, `tests/`) and provides the seeding + `run_config.json` writer that every other module depends on.
+
+After (1) lands, these three are independent and parallelizable:
+
+2. **`train/kill_switch.py`** + unit tests — pure logic, no env/data deps. TDD with the canonical test curves listed in §8.2.
+3. **`encoders/grid_cells.py`** (port from `DatasetBuilder.ipynb` cell 1) — pure math port, no env/data deps.
+4. **Env port** (§16.1: `corner_maze_env.py`, `constants.py`, `trial_sequence_gen.py`, `trial_sequence_validation.py`) — independent of (2) and (3); prerequisite for (5).
+
+After (4) lands:
+
+5. **`data/compute_returns.py`** + **`scripts/build_returns_dataset.py`** — replays yoked sessions through `CornerMazeEnv` to compute per-step `reward` and per-trial-with-ITI-start `return_to_go`. Cannot start until the env port (4) is callable as a Python module.
 
 **Phase 2 — first model (DT)**
 - `models/decision_transformer.py` (clean rewrite from `DTtrainer.ipynb`).
@@ -517,9 +565,13 @@ No moviepy (video pipeline replaced by pygame replay per §1).
 - ✅ Seed counts: pilot=5 / compare=10–20 / headline=30, exposed via `--profile` flag.
 - ✅ DT positional encoding kept flexible: 4 styles ship (`learned`, `sinusoidal`, `spatial`, `none`); default `learned`.
 - ✅ Session-type mapping resolved (mostly) — see §9.1 table. PI+VC_f1 data deferred (not yet yoked).
-- ✅ Repo name: `corner-maze-rl` (this repo); legacy archived as `corner-maze-rl-legacy`.
-- ⏳ Two empty cells in mapping table: `Fixed Cue 1 Twist`, `Dark Train × VC`.
-- ⏳ Per-group session sequence ordering (for runner traversal logic).
+- ✅ Repo name: `corner-maze-rl` (this repo); Python package `corner_maze_rl` (matches repo); legacy archived as `corner-maze-rl-legacy`.
+- ✅ One rat per training run via `--subject CM###`; rat must be in chosen group's roster. Group/subject pairing is **enforced** at config-validation time (e.g. PI+VC subject cannot run VC acquisition); mismatch → fail fast. Multi-rat batch design out of scope.
+- ✅ Egocentric image is standalone (CnnPolicy only); not composed with 60-D vector encoders.
+- ✅ `n_wm_units = 10` default (legacy parity); shared by tabular PPO and SR paths, not SR-specific.
+- ✅ Kill-switch criterion threshold named `CRITERION_MEAN = 24` (75% perfect); slope condition is `slope < FLAT_SLOPE_EPS` (asymmetric — also kills regressing curves). Test plan documents canonical curve cases.
+- 📝 TODO: Two empty cells in mapping table: `Fixed Cue 1 Twist`, `Dark Train × VC`. Skip with warning until resolved.
+- ⏳ Per-group session sequence ordering (for runner traversal logic) — Phase 2 prerequisite.
 
 ---
 
@@ -531,10 +583,10 @@ Files to copy or port from `corner-maze-rl-legacy` into this repo as the build p
 
 | Phase | Action | Source (legacy) | Target (new) | Notes |
 |-------|--------|-----------------|--------------|-------|
-| P1 | port | `src/env/corner_maze_env.py` | `src/corner_maze_dt/env/corner_maze_env.py` | Trim for student readability; **no behavioral changes**. |
-| P1 | port | `src/env/constants.py` | `src/corner_maze_dt/env/constants.py` | |
-| P1 | port | `src/env/trial_sequence_gen.py` | `src/corner_maze_dt/env/trial_sequence_gen.py` | |
-| P1 | port | `src/env/trial_sequence_validation.py` | `src/corner_maze_dt/env/trial_sequence_validation.py` | |
+| P1 | port | `src/env/corner_maze_env.py` | `src/corner_maze_rl/env/corner_maze_env.py` | Trim for student readability; **no behavioral changes**. |
+| P1 | port | `src/env/constants.py` | `src/corner_maze_rl/env/constants.py` | |
+| P1 | port | `src/env/trial_sequence_gen.py` | `src/corner_maze_rl/env/trial_sequence_gen.py` | |
+| P1 | port | `src/env/trial_sequence_validation.py` | `src/corner_maze_rl/env/trial_sequence_validation.py` | |
 
 ### 16.2 Yoked dataset (data only — pipeline stays in legacy)
 
@@ -542,7 +594,8 @@ Files to copy or port from `corner-maze-rl-legacy` into this repo as the build p
 |-------|--------|-----------------|--------------|-------|
 | P1 | copy | `data/yoked/dataset/subjects.parquet` | `data/yoked/dataset/subjects.parquet` | Read-only consumed artifact. |
 | P1 | copy | `data/yoked/dataset/sessions.parquet` | `data/yoked/dataset/sessions.parquet` | |
-| P1 | copy | `data/yoked/dataset/actions_synthetic_pretrial.parquet` | `data/yoked/dataset/actions_synthetic_pretrial.parquet` | Input to `compute_returns.py`. |
+| P1 | copy | `data/yoked/dataset/actions_synthetic_pretrial.parquet` | `data/yoked/dataset/actions_synthetic_pretrial.parquet` | Primary input to `compute_returns.py`. |
+| P1 | copy | `data/yoked/dataset/actions_real_pretrial.parquet` | `data/yoked/dataset/actions_real_pretrial.parquet` | Alt-variant ships in legacy; copy for parity / future ablations. |
 | — | reference | `md-files/yoked-data-guide.md` | (linked, not copied) | Schema canonical doc; cite via legacy GitHub URL. |
 | — | reference | `yoking/` | (entire dir stays in legacy) | Only relevant if extending to f1 subjects later. |
 
@@ -550,28 +603,28 @@ Files to copy or port from `corner-maze-rl-legacy` into this repo as the build p
 
 | Phase | Action | Source (legacy) | Target (new) | Notes |
 |-------|--------|-----------------|--------------|-------|
-| P1 | port | `notebooks/DatasetBuilder.ipynb` cell 1 | `src/corner_maze_dt/encoders/grid_cells.py` | Grid-cell pose-vector generator. Deterministic, no training. |
+| P1 | port | `notebooks/DatasetBuilder.ipynb` cell 1 | `src/corner_maze_rl/encoders/grid_cells.py` | Grid-cell pose-vector generator. Deterministic, no training. |
 | P2 | copy | `2S2C_task/embeddings/60d/position/pose_60Dvector_dictionary.pkl` | `data/encoders/pose_60Dvector_dictionary.pkl` | Pre-built grid-cell dict; ships for fast student start. |
 | P2 | copy | `2S2C_task/embeddings/60d/image/ryans_visual_embedding_dictionary.pkl` | `data/encoders/ryans_visual_embedding_dictionary.pkl` | Pretrained visual CNN dict. |
-| P2 | port | `notebooks/Minigrid_Maze_Yoked_Training.ipynb` cells 11–12 | `src/corner_maze_dt/encoders/visual_cnn.py` | CNN train + extract; pretrained weights ship. |
-| P1 | port | `src/custom_rl.py::generate_state_vector*` | `src/corner_maze_dt/encoders/{one_hot_pose,reward_history}.py` | Two functions split into separate encoder modules. |
+| P2 | port | `notebooks/Minigrid_Maze_Yoked_Training.ipynb` cells 11–12 | `src/corner_maze_rl/encoders/visual_cnn.py` | CNN train + extract; pretrained weights ship. |
+| P1 | port | `src/rl/custom_rl.py::generate_state_vector*` | `src/corner_maze_rl/encoders/{one_hot_pose,reward_history}.py` | Two functions split into separate encoder modules. `n_wm_units` defaults to 10 (legacy default); shared by PPO and SR tabular paths. |
 
 ### 16.4 Models
 
 | Phase | Action | Source (legacy) | Target (new) | Notes |
 |-------|--------|-----------------|--------------|-------|
-| P2 | port | `2S2C_task/colab/DTtrainer.ipynb` cells 1–2 | `src/corner_maze_dt/models/decision_transformer.py` + `data/windows.py` | DT model + dataloader template; rewrite per dt-repo-plan §6.2 (real RTG, configurable pos encoding, no action-weights hack). |
-| P3 | port | `src/custom_rl.py::PPOAgent` | `src/corner_maze_dt/models/ppo.py` | |
-| P3 | port | `src/custom_rl.py::SRAgent` | `src/corner_maze_dt/models/sr.py` | |
-| P3 | optional | `src/sb3_agents.py` | `src/corner_maze_dt/models/sb3_ppo.py` | Optional SB3 path for advanced students. |
+| P2 | port | `2S2C_task/colab/DTtrainer.ipynb` cells 1–2 | `src/corner_maze_rl/models/decision_transformer.py` + `data/windows.py` | DT model + dataloader template; rewrite per dt-repo-plan §6.2 (real RTG, configurable pos encoding, no action-weights hack). |
+| P3 | port | `src/rl/custom_rl.py::PPOAgent` | `src/corner_maze_rl/models/ppo.py` | |
+| P3 | port | `src/rl/custom_rl.py::SRAgent` | `src/corner_maze_rl/models/sr.py` | |
+| P3 | optional | `src/rl/sb3_agents.py` | `src/corner_maze_rl/models/sb3_ppo.py` | Optional SB3 path for advanced students. |
 
 ### 16.5 Training & utilities
 
 | Phase | Action | Source (legacy) | Target (new) | Notes |
 |-------|--------|-----------------|--------------|-------|
-| P1 | port | `src/seed_utils.py` | `src/corner_maze_dt/utils/run_io.py` | Add git-SHA capture + dataset hash. |
-| P2 | port | `src/session_runner.py` | `src/corner_maze_dt/train/runner.py` | |
-| P2 | port | `scripts/manual_control.py` | `src/corner_maze_dt/eval/replay.py` | Pygame-based replay; no moviepy. |
+| P1 | port | `src/rl/seed_utils.py` | `src/corner_maze_rl/utils/run_io.py` | Add git-SHA capture + dataset hash. Legacy also ships `register_experiment()` for manifest.jsonl indexing — port if useful, else drop. |
+| P2 | port | `src/rl/session_runner.py` | `src/corner_maze_rl/train/runner.py` | |
+| P2 | port | `scripts/manual_control.py` | `src/corner_maze_rl/eval/replay.py` | Pygame-based replay; no moviepy. |
 
 ### 16.6 Reference / documentation
 
@@ -584,7 +637,7 @@ Files to copy or port from `corner-maze-rl-legacy` into this repo as the build p
 
 ### 16.7 Things explicitly NOT to copy
 
-- `src/sb3_agents.py::StereoFeaturesExtractor` and stereo-eye dataset — out of scope for DT/PPO/SR student build.
+- `src/rl/sb3_agents.py::StereoFeaturesExtractor` and stereo-eye dataset — out of scope for DT/PPO/SR student build.
 - `md-files/yoked-env-integration-plan.md`, `md-files/yoking-process-log.md`, `md-files/well-exit-action-masking-plan.md` — historical legacy planning artifacts.
 - `experiments/`, `model-data/` from legacy — those are legacy run outputs.
 - Notebooks `corner-maze-rl.ipynb`, `colab-minigrid-rl.ipynb` — legacy scratchpads; new repo will have its own clean Colab notebooks per §3.

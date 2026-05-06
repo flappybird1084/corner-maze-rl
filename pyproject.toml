@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "corner-maze-rl"
+version = "0.1.0"
+description = "Decision Transformer + PPO + SR baselines on the corner-maze MiniGrid environment, with yoked rodent behavior data."
+readme = "README.md"
+requires-python = ">=3.11"
+license = {file = "LICENSE"}
+authors = [{name = "Ryan Grgurich"}]
+dependencies = [
+    "gymnasium>=0.29",
+    "minigrid>=2.3",
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "pyarrow>=14",
+    "duckdb>=0.9",
+    "torch>=2.0",
+    "tqdm>=4.65",
+    "matplotlib>=3.7",
+]
+
+[project.optional-dependencies]
+sb3 = ["stable-baselines3>=2.2", "sb3-contrib>=2.2"]
+eval = ["rliable>=1.2"]
+notebook = ["ipywidgets>=8", "jupyter"]
+replay = ["pygame>=2.5"]
+dev = ["pytest>=7.4", "pytest-cov>=4.1"]
+
+[project.scripts]
+corner-maze-build-returns = "corner_maze_rl.scripts.build_returns_dataset:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"corner_maze_rl" = ["data/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -q"

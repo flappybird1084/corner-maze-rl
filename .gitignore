@@ -1,7 +1,25 @@
 __pycache__/
 *.pyc
+*.pyo
+*.egg-info/
+*.egg
+build/
+dist/
 .venv
 ai-venv/
 .vscode/
 .DS_Store
 CLAUDE.md
+
+# Run outputs / model artifacts
+runs/
+model-data/
+
+# Yoked dataset (large; copied from legacy via setup script)
+data/yoked/
+data/encoders/
+
+# Pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/

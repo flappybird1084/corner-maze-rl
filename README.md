@@ -30,7 +30,7 @@ pip install -e .
 ### Colab
 ```python
 !pip install git+https://github.com/ryangrg/corner-maze-rl.git
-from corner_maze_dt import ...
+from corner_maze_rl import ...
 ```
 
 ## Repository layout
@@ -44,7 +44,7 @@ corner-maze-rl/
 │   ├── maze-behavior-spec.md  # 2S2C task rules
 │   ├── reward-structure-analysis.md
 │   └── sr-yoked-negative-results.md
-├── src/corner_maze_dt/        # (to be built — see plan §3)
+├── src/corner_maze_rl/        # (to be built — see plan §3)
 ├── colab/                     # (to be built — thin notebooks importing the package)
 ├── data/                      # (gitignored; setup script will populate)
 └── LICENSE
