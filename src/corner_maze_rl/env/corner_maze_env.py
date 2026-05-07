@@ -619,11 +619,23 @@ class CornerMazeEnv(MiniGridEnv):
     def _load_embeddings(self):
         """Load embedding data and build pose-to-vector lookup dicts."""
         import os
-        # Walk up to repo root from src/corner_maze_rl/env/<this>.
-        # parents[0]=env, [1]=corner_maze_rl, [2]=src, [3]=repo root.
         from pathlib import Path
+        # Search several candidate locations so this works for:
+        #   (1) editable installs from a local clone (parents[3] = repo root)
+        #   (2) Colab / pip-installed wheels with parquet pre-staged in CWD
+        #   (3) explicit absolute path supplied via EMBEDDING_PARQUET_PATH
         repo_root = Path(__file__).resolve().parents[3]
-        parquet_path = repo_root / EMBEDDING_PARQUET_PATH
+        candidates = [
+            repo_root / EMBEDDING_PARQUET_PATH,
+            Path.cwd() / EMBEDDING_PARQUET_PATH,
+            Path(EMBEDDING_PARQUET_PATH),  # in case it's already absolute
+        ]
+        parquet_path = next((p for p in candidates if p.is_file()), None)
+        if parquet_path is None:
+            tried = "\n  ".join(str(p) for p in candidates)
+            raise FileNotFoundError(
+                f"Embeddings parquet not found. Searched:\n  {tried}"
+            )
         emb_df = pd.read_parquet(parquet_path)
 
         self._pose_to_embedding = {}
