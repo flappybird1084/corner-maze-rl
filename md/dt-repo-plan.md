@@ -17,7 +17,7 @@
 ## 1. Goals
 
 1. Single-file-style implementations of **DT**, **PPO**, **SR** that share an env, an encoder layer, and a run-management layer.
-2. Decision Transformer trained on yoked rat behavior with **real env-derived rewards** (not the fake "session-progress" RTG in the current notebook).
+2. Decision Transformer trained on yoked rat behavior with **real env-derived rewards** (not the "session-progress" RTG in the current notebook).
 3. Pluggable **state encoders** (grid-cells, visual-CNN, one-hot tabular, reward-history, egocentric image) that can be combined.
 4. **Pip-installable from GitHub** so Colab notebooks are thin (`pip install git+https://...`; no sys.path hacks).
 5. Reproducible run-saving with seeds, configs, and per-step trajectories.

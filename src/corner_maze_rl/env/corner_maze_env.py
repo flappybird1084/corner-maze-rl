@@ -619,9 +619,11 @@ class CornerMazeEnv(MiniGridEnv):
     def _load_embeddings(self):
         """Load embedding data and build pose-to-vector lookup dicts."""
         import os
-        parquet_path = os.path.join(
-            os.path.dirname(__file__), '..', '..', EMBEDDING_PARQUET_PATH
-        )
+        # Walk up to repo root from src/corner_maze_rl/env/<this>.
+        # parents[0]=env, [1]=corner_maze_rl, [2]=src, [3]=repo root.
+        from pathlib import Path
+        repo_root = Path(__file__).resolve().parents[3]
+        parquet_path = repo_root / EMBEDDING_PARQUET_PATH
         emb_df = pd.read_parquet(parquet_path)
 
         self._pose_to_embedding = {}

@@ -28,6 +28,16 @@ if [[ -f "$LEGACY/2S2C_task/embeddings/60d/image/ryans_visual_embedding_dictiona
           "$REPO_ROOT/data/encoders/"
 fi
 
+# Eye-image embeddings parquet (used by 01_explore_env.ipynb to render the
+# left/right eye panels). Optional — the maze panel works without it.
+mkdir -p "$REPO_ROOT/data/dataframes"
+EYE_PARQUET="$LEGACY/data/dataframes/dual-indep-20260319-222411-embeddings-allposes.parquet"
+if [[ -f "$EYE_PARQUET" ]]; then
+    cp -v "$EYE_PARQUET" "$REPO_ROOT/data/dataframes/"
+else
+    echo "  (skip — eye-image parquet not present in legacy)"
+fi
+
 # Yoked dataset (3-table normalized form)
 mkdir -p "$REPO_ROOT/data/yoked/dataset"
 for f in subjects.parquet sessions.parquet \
