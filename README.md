@@ -27,11 +27,13 @@ python3.12 -m venv .venv && source .venv/bin/activate
 pip install -e .
 ```
 
-### Colab
+### Colab-in-browser (limited)
+The interactive `notebooks/` UI is **VS Code / local Jupyter only** — Colab's iframe-sandboxed widget framework breaks rendering and keyboard input. For non-interactive components (training scripts, dataset builds, evaluation), Colab is fine:
 ```python
 !pip install git+https://github.com/ryangrg/corner-maze-rl.git
 from corner_maze_rl import ...
 ```
+If you need cloud + the interactive UI, point VS Code at a remote Jupyter kernel (e.g. GitHub Codespaces or a managed runtime) — the IDE renders widgets locally even when compute is remote.
 
 ## Repository layout
 
@@ -45,7 +47,7 @@ corner-maze-rl/
 │   ├── reward-structure-analysis.md
 │   └── sr-yoked-negative-results.md
 ├── src/corner_maze_rl/        # (to be built — see plan §3)
-├── colab/                     # (to be built — thin notebooks importing the package)
+├── notebooks/                 # interactive notebooks (VS Code recommended)
 ├── data/                      # (gitignored; setup script will populate)
 └── LICENSE
 ```

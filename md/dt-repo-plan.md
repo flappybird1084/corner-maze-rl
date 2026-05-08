@@ -38,7 +38,7 @@
 corner-maze-rl/
 ├── README.md                            # students: install + 5-min quickstart
 ├── pyproject.toml                       # pip-installable package
-├── colab/
+├── notebooks/                           # VS Code / local Jupyter — NOT Colab-in-browser
 │   ├── 01_explore_env.ipynb             # env walkthrough, manual control
 │   ├── 02_explore_yoked_data.ipynb      # load dataset, plot trajectories
 │   ├── 03_compute_returns.ipynb         # build reward + RTG cache
@@ -525,7 +525,7 @@ After (4) lands:
 - README + `md-files/adding_a_model.md`.
 
 **Phase 5 — student polish**
-- `colab/` notebooks finalized.
+- `notebooks/` finalized (VS Code / local Jupyter; Colab-in-browser explicitly unsupported for the interactive UI; non-interactive scripts remain Colab-friendly).
 - Quickstart README.
 - Setup script for `data/`.
 
