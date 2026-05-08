@@ -19,6 +19,11 @@ model-data/
 data/yoked/
 data/encoders/
 data/dataframes/
+# Catch the same dirs anywhere in the tree (e.g. notebooks/data/...)
+# in case a notebook auto-downloads relative to CWD.
+**/data/yoked/
+**/data/encoders/
+**/data/dataframes/
 
 # Pytest / coverage
 .pytest_cache/
