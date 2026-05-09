@@ -3,8 +3,7 @@
 Per plan §9, each (training_group, yoked_session_type) pair maps to a
 specific env paradigm. This module owns that table.
 
-Two cells are intentionally unmapped (plan §13 TODO):
-  * ``Fixed Cue 1 Twist`` — all groups
+One cell is intentionally unmapped (plan §13 TODO):
   * ``VC × Dark Train``
 
 For any unmapped pair, ``map_session_to_env_kwargs`` returns ``None`` so the
@@ -18,25 +17,19 @@ from typing import Mapping
 # (training_group, yoked_session_type) → env paradigm string
 PARADIGM_MAP: Mapping[tuple[str, str], str] = {
     # PI+VC
-    ("PI+VC", "Rotate Train"):   "PI+VC f2 rotate",
-    ("PI+VC", "Fixed Cue 1"):    "PI+VC f2 novel route",
-    ("PI+VC", "Dark Train"):     "PI+VC f2 no cue",
+    ("PI+VC", "Rotate Train"):           "PI+VC f2 rotate",
+    ("PI+VC", "Fixed Cue 1"):            "PI+VC f2 novel route",
+    ("PI+VC", "Dark Train"):             "PI+VC f2 no cue",
     # PI
-    ("PI",    "Fixed Cue 1"):    "PI novel route cue",
-    ("PI",    "Dark Train"):     "PI acquisition",
+    ("PI",    "Fixed Cue 1"):            "PI novel route cue",
+    ("PI",    "Dark Train"):             "PI acquisition",
     # VC
-    ("VC",    "Rotate Train"):   "VC acquisition",
-    ("VC",    "Fixed Cue 1"):    "VC novel route fixed",
-    # PI+VC_f1: not yet yoked (plan §9.2 marks NotImplementedError until data is added).
-    # VC_DREADDs: out of scope for student build.
+    ("VC",    "Rotate Train"):           "VC acquisition",
+    ("VC",    "Fixed Cue 1"):            "VC novel route fixed",
+    # PI+VC_f1
+    ("PI+VC_f1", "Fixed Cue 1 Twist"):   "PI+VC f1 acquisition",
+    # VC_DREADDs: out of scope for student build (subjects dropped from dataset 2026-05-08).
 }
-
-
-# Subjects in the f1 cohort that need yoking-pipeline extension before they
-# can be used. Plan §9.2.
-F1_SUBJECT_NAMES: frozenset[str] = frozenset(
-    {"CM057", "CM058", "CM059", "CM060", "CM061", "CM063", "CM064"}
-)
 
 
 # Per-group session-arc ordering. Plan §13 ⏳: unresolved. Until the user
@@ -47,7 +40,7 @@ SESSION_SEQUENCES: Mapping[str, list[str] | None] = {
     "pi_vc":    None,  # TODO: lock canonical order
     "pi":       None,
     "vc":       None,
-    "pi_vc_f1": None,  # raises NotImplementedError per plan §9.2
+    "pi_vc_f1": None,
 }
 
 
@@ -58,11 +51,17 @@ def map_session_to_env_kwargs(
     cue_goal_orientation: str,
     start_goal_location: str | None = None,
     obs_mode: str = "view",
+    trial_configs: list | None = None,
 ) -> dict | None:
     """Build kwargs for ``CornerMazeEnv(...)`` for a yoked session.
 
     Returns ``None`` if the (group, session_type) pair is unmapped (TODO
     cells per plan §13). Caller decides whether to skip the session.
+
+    ``trial_configs`` (the rat's actual ``[arm, cue, goal, tag]`` list
+    from ``sessions.parquet``) is passed through to the env to disable
+    its random trial-pool shuffle, so the env's start arm / cue / goal
+    sequence matches the rat's recorded trials step-for-step.
     """
     paradigm = PARADIGM_MAP.get((training_group, yoked_session_type))
     if paradigm is None:
@@ -72,6 +71,7 @@ def map_session_to_env_kwargs(
         "agent_cue_goal_orientation": cue_goal_orientation,
         "start_goal_location": start_goal_location,
         "obs_mode": obs_mode,
+        "trial_configs": trial_configs,
     }
 
 

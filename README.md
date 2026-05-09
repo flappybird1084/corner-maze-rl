@@ -9,10 +9,53 @@ Decision Transformer + PPO + Successor-Representation baselines on a 13×13 corn
 A teaching repo for offline / behavior-cloning-style RL on a real neuroscience task:
 
 - **Environment** — 13×13 MiniGrid corner maze with structured trial phases (exposure → pretrial → trial → ITI), four wells, four cues, configurable session paradigms (PI, VC, PI+VC).
-- **Yoked dataset** — action sequences derived from real rodent behavioral tracking (≈250 sessions across PI / VC / PI+VC training groups), with env-derived per-step rewards and per-trial return-to-go.
+- **Yoked dataset** — action sequences derived from real rodent behavioral tracking: **531 sessions across 56 subjects in 4 training groups**, with env-derived per-step rewards and per-trial return-to-go. See [Subjects and yoked data](#subjects-and-yoked-data) below for the breakdown.
 - **Models** — Decision Transformer (the headline model), plus PPO and SR baselines for comparison.
 - **Encoders** — composable state encoders (grid-cell pose vectors, pretrained visual CNN, one-hot tabular, reward-history) all standardized to 60D.
 - **Eval protocol** — IQM + stratified bootstrap CIs, drawdown reliability, performance profiles, kill-switch on flat learning curves. Grounded in the empirical-RL methodology canon ([Henderson 2018], [Agarwal 2021], [Patterson 2024]).
+
+## Subjects and yoked data
+
+The yoked dataset lives at `data/yoked/dataset/` (gitignored; populated via `scripts/setup_data.sh` or rebuilt from upstream with `corner-maze-build-dataset`). It currently contains:
+
+| Training group | Subjects | Primary acquisition session_type | Acquisition sessions | Exposure sessions |
+|---|---:|---|---:|---:|
+| **PI** (path-integration only) | 15 | Dark Train (no visual cue) | 121* | 29 |
+| **PI+VC** (place + visual cue) | 17 | Fixed Cue 1 (stable cue) | 118 | 32 |
+| **PI+VC_f1** (f1-generation cohort) | 7 | Fixed Cue 1 Twist | 68 | 14 |
+| **VC** (visual cue only) | 17 | Rotate Train (cue rotates) | 115 | 34 |
+| **Total** | **56** | | **422** | **109** |
+
+<sup>*4 of the 121 PI sessions are tagged `Fixed Cue 1` rather than `Dark Train` — a per-subject experimental detour, not a separate paradigm.</sup>
+
+The dataset ships three action tables (one row per env step, schema `session_id, step, action, grid_x, grid_y, direction, rewarded`):
+
+- `actions_synthetic_pretrial.parquet` — Acquisition only, synthetic pretrial (the primary input to training; 422 sessions, ~768 K rows)
+- `actions_real_pretrial.parquet` — Acquisition only, real pretrial (alt variant for ablations; 236 sessions, ~612 K rows)
+- `actions_exposure.parquet` — Exposure phase only, no pretrial concept (109 sessions, ~266 K rows)
+
+Plus `subjects.parquet` (56 rows) and `sessions.parquet` (531 rows: 422 Acquisition + 109 Exposure). Schema details in [src/corner_maze_rl/data/load.py](src/corner_maze_rl/data/load.py).
+
+### Subject roster
+
+Pass any of these to the runner via `--subject <name>`. Format: `name (subject_id, AcquisitionSessions + ExposureSessions)`. Subject IDs are upstream join keys; you don't usually pass them directly.
+
+**PI** (15 subjects, ids 67–98): CM023 (67, 6A+2E), CM024 (69, 6A+2E), CM027 (68, 7A+2E), CM030 (74, 13A+2E), CM032 (77, 20A+2E), CM033 (79, 19A+2E), CM036 (78, 12A+2E), CM037 (80, 4A+2E), CM046 (90, 6A+2E), CM049 (93, 5A+2E), CM050 (94, 3A+2E), CM051 (95, 5A+2E), CM052 (96, 5A+2E), CM053 (97, 5A+1E), CM054 (98, 5A+2E)
+
+**PI+VC** (17 subjects, ids 47–63): CM000 (47, 7A+2E), CM001 (48, 6A+2E), CM002 (49, 7A+1E), CM003 (50, 8A+2E), CM004 (51, 8A+2E), CM005 (52, 6A+2E), CM006 (53, 3A+2E), CM007 (54, 9A+2E), **CM008\*** (55, 3A+1E), CM009 (56, 7A+2E), CM010 (57, 5A+2E), CM011 (58, 5A+2E), CM014 (59, 10A+2E), CM015 (61, 11A+2E), CM016 (63, 5A+2E), CM017 (60, 9A+2E), CM018 (62, 9A+2E)
+
+**PI+VC_f1** (7 subjects, ids 123–130): CM057 (123, 22A+2E), CM058 (124, 8A+2E), CM059 (125, 12A+2E), CM060 (126, 5A+2E), CM061 (127, 3A+2E), CM063 (129, 7A+2E), CM064 (130, 11A+2E)
+
+**VC** (17 subjects, ids 70–100): CM025 (71, 7A+2E), CM026 (73, 5A+2E), CM028 (70, 9A+2E), CM031 (75, 9A+2E), CM034 (81, 9A+2E), CM035 (76, 8A+2E), CM038 (82, 6A+2E), CM039 (83, 5A+2E), CM040 (84, 7A+2E), CM041 (85, 6A+2E), CM042 (86, 5A+2E), CM043 (87, 6A+2E), CM044 (88, 5A+2E), CM045 (89, 7A+2E), CM048 (92, 6A+2E), CM055 (99, 8A+2E), CM056 (100, 7A+2E)
+
+<sup>Subjects with `1E` rather than `2E` reflect upstream reality (only one Exposure session was recorded), except **CM008\***, where the second Exposure session exists upstream but is missing coordinate tracking — see [Known data gaps](#known-data-gaps) below. Subject IDs are interleaved across groups because they reflect experimental-cohort order, not group membership.</sup>
+
+### Known data gaps
+
+- **CM008 1e (Exposure)** — missing. Upstream coordinate tracking failed for this session; the source `.avi` exists but was never auto-tracked. Re-running the upstream tracker in `corner-maze-analysis` would close the gap; until then, exposure coverage is 109/110 sessions.
+- **Other behavioral phases** — Reversal, Novel Route, Rotation, and No Cue sessions exist upstream but are intentionally out of scope for this dataset; only Acquisition + Exposure are yoked.
+
+The yoking pipeline that produced these tables lives in [src/corner_maze_rl/yoking/](src/corner_maze_rl/yoking/); to extend coverage to additional sessions or subjects, run `corner-maze-build-yoked --subject <ID> --phase <Acquisition|Exposure>` and rebuild with `corner-maze-build-dataset` (requires `CORNER_MAZE_ANALYSIS_DIR` pointing at the upstream behavioral parquets).
 
 ## Quickstart
 

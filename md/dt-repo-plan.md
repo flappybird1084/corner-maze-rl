@@ -28,7 +28,7 @@
 ## 2. Non-goals
 
 - Changing maze behavior design (sparse +1/trial scoring is fixed).
-- Building a new yoking pipeline (reuse the mature one in [yoking/](../yoking/)).
+- Building a new yoking pipeline from scratch (the mature legacy pipeline was ported to `src/corner_maze_rl/yoking/`; extensions land there).
 - Multi-rat training (one rat per experiment, ≤ 80 sessions).
 - Retraining the visual CNN by default (ship pretrained; allow on-the-fly retrain as advanced option).
 
@@ -319,16 +319,17 @@ User picks one as a CLI/config arg. Defaults to PI+VC. Each choice = a *training
 
 The yoked dataset's `session_type` column holds experiment-design names; the same yoked session_type maps to a *different env paradigm* depending on the rat's training_group:
 
-| Yoked `session_type` | training_group=PI+VC | training_group=PI | training_group=VC |
-|---------------------|----------------------|-------------------|-------------------|
-| `Rotate Train` | `PI+VC f2 rotate` | — | `VC acquisition` |
-| `Fixed Cue 1` | `PI+VC f2 novel route` | `PI novel route cue` | `VC novel route fixed` |
-| `Dark Train` | `PI+VC f2 no cue` | `PI acquisition` | — (TBD) |
-| `Fixed Cue 1 Twist` | TBD | TBD | TBD |
+| Yoked `session_type` | training_group=PI+VC | training_group=PI+VC_f1 | training_group=PI | training_group=VC |
+|---------------------|----------------------|------------------------|-------------------|-------------------|
+| `Rotate Train` | `PI+VC f2 rotate` | — | — | `VC acquisition` |
+| `Fixed Cue 1` | `PI+VC f2 novel route` | — | `PI novel route cue` | `VC novel route fixed` |
+| `Dark Train` | `PI+VC f2 no cue` | — | `PI acquisition` | — (TBD) |
+| `Fixed Cue 1 Twist` | — | `PI+VC f1 acquisition` | — | — |
 
 **Open data points:**
-- `Fixed Cue 1 Twist` (all groups) — **TODO**, defer; not blocking initial build. Skip with warning until mapping is provided.
 - `VC × Dark Train` — cell empty, mark TODO; skip with warning.
+
+(2026-05-08: PI+VC_f1 × Fixed Cue 1 Twist mapping resolved — yoking pipeline produced correct action sequences all along; only the env-paradigm mapping was missing.)
 
 Treat any unmapped (group, yoked_session_type) pair as "skip with warning" so the runner is robust to incomplete tables.
 
@@ -352,7 +353,7 @@ A future "batch design" mode could train on multiple rats jointly within one gro
 | `pi_vc` (default) | `PI+VC` | ✅ available | Most-tested data path. |
 | `pi` | `PI` | ✅ available | |
 | `vc` | `VC` | ✅ available | |
-| `pi_vc_f1` | `PI+VC` (f1 subjects: CM057, CM058, CM059, CM060, CM061, CM063, CM064) | ⚠️ **not yet yoked** — different correct routes; pipeline extension required | Stub the option, raise `NotImplementedError` with clear message until data is added. |
+| `pi_vc_f1` | `PI+VC_f1` (CM057, CM058, CM059, CM060, CM061, CM063, CM064) | ✅ available | 68 Acquisition + 14 Exposure sessions; `Fixed Cue 1 Twist` → `PI+VC f1 acquisition`. |
 
 ### 9.3 `data/session_types.py` structure
 
@@ -375,11 +376,11 @@ SESSION_SEQUENCES: dict[str, list[tuple[str, str]]] = {
         ("VC novel route fixed", "Fixed Cue 1"),
         # ...
     ],
-    "pi_vc_f1": None,   # raises NotImplementedError until yoking extended
+    "pi_vc_f1": [
+        ("PI+VC f1 acquisition", "Fixed Cue 1 Twist"),
+        # ...
+    ],
 }
-
-# subjects.parquet filter for the f1 subgroup, when added:
-F1_SUBJECT_NAMES = {"CM057", "CM058", "CM059", "CM060", "CM061", "CM063", "CM064"}
 ```
 
 The runner iterates through this sequence per chosen group, pulling the matching yoked rows for each (env_paradigm, yoked_session_type) pair.
@@ -444,21 +445,25 @@ Avoid maximization bias:
 
 ## 11. Data pipeline
 
-The yoking pipeline stays in `corner-maze-rl-legacy/yoking/`. This repo *consumes* the resulting 3-table dataset (copied per §16.2) and adds one downstream stage:
+The yoking pipeline lives in this repo at `src/corner_maze_rl/yoking/` (ported 2026-05-08 from `corner-maze-rl-legacy/yoking/`). It reads from upstream `corner-maze-analysis/data/processed/` (path via `$CORNER_MAZE_ANALYSIS_DIR`) and writes the 5-table dataset that downstream training consumes:
 
 ```
-data/yoked/dataset/                                  (copied from legacy, read-only)
+$CORNER_MAZE_ANALYSIS_DIR (upstream behavioral parquets)
+                ↓ corner-maze-build-yoked  (per-session actions → data/yoked/*.parquet)
+                ↓ corner-maze-build-dataset (normalize → 5-table layout)
+data/yoked/dataset/
   ├── subjects.parquet
-  ├── sessions.parquet
-  ├── actions_synthetic_pretrial.parquet             # primary input (5-action aligned)
-  └── actions_real_pretrial.parquet                  # alt variant; legacy ships both, copy-only for parity
+  ├── sessions.parquet                               # all phases
+  ├── actions_synthetic_pretrial.parquet             # Acquisition only, synthetic pretrial — primary input
+  ├── actions_real_pretrial.parquet                  # Acquisition only, real pretrial — alt variant
+  └── actions_exposure.parquet                       # Exposure only (no pretrial concept)
                 ↓ scripts/build_returns_dataset.py    (this repo)
-data/yoked/dataset/actions_with_returns.parquet      (new — adds reward + RTG columns)
+data/yoked/dataset/actions_with_returns.parquet      (adds reward + RTG columns)
 ```
+
+`build_dataset.py` post-build assertions guarantee every action-table `session_id` has a matching `sessions.parquet` row with the correct phase. Diagnostics live in `yoking/diagnostics/` (`check_divergence.py`, `check_well_visits.py`, `check_contiguity.py`, `replay_session.py` — pygame, optional).
 
 The new repo depends on `actions_with_returns.parquet`. The build script is one-time, deterministic, hashable — the dataset hash goes into every run_config.json so we know which dataset version a run was trained on.
-
-When the f1 subjects (CM057–064, see §9.2) need to be yoked, that work happens in the legacy repo's `yoking/` pipeline; the resulting parquets are then copied into this repo.
 
 ## 12. Environment integration
 
@@ -477,12 +482,13 @@ In priority order:
 
 1. **Per-group session sequence ordering** — the (group, yoked_session_type) → env_paradigm *mapping* is in §9.1, but the *order* in which a group's training arc runs (e.g., does PI+VC always go rotate → novel → no_cue, or different?) is not yet specified. Required for `data/session_types.py` and `train/runner.py` (Phase 2). **Not blocking Phase 1.**
 
-2. **TODO: complete two empty mapping cells** — `Fixed Cue 1 Twist` (all groups) and `Dark Train × VC`. Defer; runner skips unmapped pairs with a warning. Resolve before headline runs.
+2. **TODO: complete one empty mapping cell** — `Dark Train × VC`. Defer; runner skips unmapped pairs with a warning. Resolve before headline runs.
 
 ### Closed (this iteration)
 
 - ~~Repo / package name~~ — repo `corner-maze-rl`, Python package `corner_maze_rl` (matches repo for student clarity). Decided 2026-05-05.
-- ~~PI+VC_f1 data~~ — separate subjects (CM057–064), different correct routes, **not yet yoked**. Stub the option, raise `NotImplementedError`. Yoking-pipeline extension scheduled for later.
+- ~~PI+VC_f1 data~~ — separate subjects (CM057, CM058, CM059, CM060, CM061, CM063, CM064) using `Fixed Cue 1 Twist` session_type. **Resolved 2026-05-08:** plan's "not yet yoked" claim was wrong — yoking pipeline produced correct action sequences all along (trial_configs are read verbatim from upstream `trials.parquet`, which already encode f1-specific routes). The actual missing piece was the env-paradigm mapping `(PI+VC_f1, Fixed Cue 1 Twist) → "PI+VC f1 acquisition"` in `data/session_types.py`, now in place.
+- ~~`Fixed Cue 1 Twist` mapping~~ — only PI+VC_f1 has Twist sessions in the dataset; mapped to `PI+VC f1 acquisition`. PI/VC/PI+VC × Twist remain blank because those subjects don't have Twist data, not because they're TODO.
 - ~~Positional encoding choice~~ — keep flexible: 4 styles (`learned`, `sinusoidal`, `spatial`, `none`) ship out of the box. Default `learned`.
 - ~~Repo hosting~~ — public GitHub confirmed.
 - ~~Seed count for headline runs~~ — N=30 for `headline` profile, N=5 for `pilot` (the default), N=10–20 for `compare`. Implemented as `--profile` flag.
@@ -564,13 +570,13 @@ No moviepy (video pipeline replaced by pygame replay per §1).
 - ✅ Public GitHub for pip install.
 - ✅ Seed counts: pilot=5 / compare=10–20 / headline=30, exposed via `--profile` flag.
 - ✅ DT positional encoding kept flexible: 4 styles ship (`learned`, `sinusoidal`, `spatial`, `none`); default `learned`.
-- ✅ Session-type mapping resolved (mostly) — see §9.1 table. PI+VC_f1 data deferred (not yet yoked).
+- ✅ Session-type mapping resolved — see §9.1 table. PI+VC_f1 wired up 2026-05-08 (`Fixed Cue 1 Twist` → `PI+VC f1 acquisition`).
 - ✅ Repo name: `corner-maze-rl` (this repo); Python package `corner_maze_rl` (matches repo); legacy archived as `corner-maze-rl-legacy`.
 - ✅ One rat per training run via `--subject CM###`; rat must be in chosen group's roster. Group/subject pairing is **enforced** at config-validation time (e.g. PI+VC subject cannot run VC acquisition); mismatch → fail fast. Multi-rat batch design out of scope.
 - ✅ Egocentric image is standalone (CnnPolicy only); not composed with 60-D vector encoders.
 - ✅ `n_wm_units = 10` default (legacy parity); shared by tabular PPO and SR paths, not SR-specific.
 - ✅ Kill-switch criterion threshold named `CRITERION_MEAN = 24` (75% perfect); slope condition is `slope < FLAT_SLOPE_EPS` (asymmetric — also kills regressing curves). Test plan documents canonical curve cases.
-- 📝 TODO: Two empty cells in mapping table: `Fixed Cue 1 Twist`, `Dark Train × VC`. Skip with warning until resolved.
+- 📝 TODO: One empty cell in mapping table: `Dark Train × VC`. Skip with warning until resolved.
 - ⏳ Per-group session sequence ordering (for runner traversal logic) — Phase 2 prerequisite.
 
 ---
@@ -588,16 +594,22 @@ Files to copy or port from `corner-maze-rl-legacy` into this repo as the build p
 | P1 | port | `src/env/trial_sequence_gen.py` | `src/corner_maze_rl/env/trial_sequence_gen.py` | |
 | P1 | port | `src/env/trial_sequence_validation.py` | `src/corner_maze_rl/env/trial_sequence_validation.py` | |
 
-### 16.2 Yoked dataset (data only — pipeline stays in legacy)
+### 16.2 Yoked dataset and pipeline
+
+Pipeline ported in-tree 2026-05-08. Dataset regenerated to add `actions_exposure.parquet` and backfill exposure metadata; gitignored, produced via `corner-maze-build-dataset` from upstream `$CORNER_MAZE_ANALYSIS_DIR`.
 
 | Phase | Action | Source (legacy) | Target (new) | Notes |
 |-------|--------|-----------------|--------------|-------|
-| P1 | copy | `data/yoked/dataset/subjects.parquet` | `data/yoked/dataset/subjects.parquet` | Read-only consumed artifact. |
-| P1 | copy | `data/yoked/dataset/sessions.parquet` | `data/yoked/dataset/sessions.parquet` | |
-| P1 | copy | `data/yoked/dataset/actions_synthetic_pretrial.parquet` | `data/yoked/dataset/actions_synthetic_pretrial.parquet` | Primary input to `compute_returns.py`. |
-| P1 | copy | `data/yoked/dataset/actions_real_pretrial.parquet` | `data/yoked/dataset/actions_real_pretrial.parquet` | Alt-variant ships in legacy; copy for parity / future ablations. |
-| — | reference | `md-files/yoked-data-guide.md` | (linked, not copied) | Schema canonical doc; cite via legacy GitHub URL. |
-| — | reference | `yoking/` | (entire dir stays in legacy) | Only relevant if extending to f1 subjects later. |
+| P1 | port | `yoking/data_loader.py` | `src/corner_maze_rl/yoking/data_loader.py` | `ANALYSIS_DATA_DIR` now env-var driven. |
+| P1 | port | `yoking/map_to_minigrid.py` | `src/corner_maze_rl/yoking/map_to_minigrid.py` | |
+| P1 | port | `yoking/map_to_minigrid_actions.py` | `src/corner_maze_rl/yoking/map_to_minigrid_actions.py` | Imports rewired to `corner_maze_rl.env.*`. |
+| P1 | port | `yoking/zone_pixel_map.py` | `src/corner_maze_rl/yoking/zone_pixel_map.py` | |
+| P1 | port | `yoking/get_tracked_exposure_rewards.py` | `src/corner_maze_rl/yoking/get_tracked_exposure_rewards.py` | |
+| P1 | port | `yoking/build_yoked.py` | `src/corner_maze_rl/yoking/build_yoked.py` | Filename now suffixes `_synthetic`/`_real` for Acquisition outputs. |
+| P1 | rewrite | `yoking/build_dataset.py` | `src/corner_maze_rl/yoking/build_dataset.py` | Now emits 5 tables (synth/real/exposure split by `session_phase`); adds post-build assertions. |
+| P1 | port | `yoking/check_divergence.py`, `check_well_visits.py`, `check_contiguity.py`, `replay_session.py`, `replay_divergence_log.md` | `src/corner_maze_rl/yoking/diagnostics/` | Optional pygame dep for replay. |
+| P1 | regen | `data/yoked/dataset/{subjects,sessions,actions_synthetic_pretrial,actions_real_pretrial,actions_exposure}.parquet` | (gitignored output) | 70 subjects, 688 sessions (551 Acq + 137 Exp). 1 missing Exposure (CM008 1e: no upstream coords). |
+| — | defer | `yoking/rotate_to_canonical.py`, analysis/replay tools | — | Port when SR/canonical-orientation work resumes. |
 
 ### 16.3 Encoders
 

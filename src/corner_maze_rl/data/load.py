@@ -1,11 +1,16 @@
-"""DuckDB-backed loaders for the 3-table yoked dataset.
+"""DuckDB-backed loaders for the 5-table yoked dataset.
 
 The dataset lives at ``data/yoked/dataset/`` (gitignored; populated by
-``scripts/setup_data.sh``):
+``scripts/setup_data.sh`` or ``corner-maze-build-dataset``):
 
-  * ``subjects.parquet``                — one row per rat
-  * ``sessions.parquet``                — one row per session
-  * ``actions_synthetic_pretrial.parquet`` — one row per env step
+  * ``subjects.parquet``                       — one row per rat
+  * ``sessions.parquet``                       — one row per session (all phases)
+  * ``actions_synthetic_pretrial.parquet``     — Acquisition only, synthetic pretrial
+  * ``actions_real_pretrial.parquet``          — Acquisition only, real pretrial
+  * ``actions_exposure.parquet``               — Exposure only (no pretrial concept)
+
+``YokedPaths.from_dir(actions_variant=...)`` picks the action table by suffix:
+``"synthetic_pretrial"``, ``"real_pretrial"``, or ``"exposure"``.
 
 This module wraps lightweight queries used by the build-returns pipeline
 and the runner. All paths are configurable so the same code runs locally

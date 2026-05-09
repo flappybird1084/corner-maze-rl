@@ -78,6 +78,7 @@ remote pushes. No destructive ops.
    - (b) Add an `exposure` env paradigm that the build script picks for sessions where the rat's session has exposure phases.
    - (c) Do both — match exposure replay through `'exposure'` paradigm, then switch to trial paradigm for the trial-cycles portion. This is what legacy did per its yoking pipeline.
    Documented in `scripts/build_returns_dataset.py` docstring under "KNOWN LIMITATION".
+   *2026-05-08 update*: dataset now ships `actions_exposure.parquet` (137/138 sessions); the data-side gap is closed. Remaining work is the env-paradigm mapping in `session_types.py` so `--actions-variant exposure` becomes consumable.
 
 2. **Plan §13 TODOs that remain** — `Fixed Cue 1 Twist` mapping (all groups); `VC × Dark Train` cell. Currently skipped with a warning.
 

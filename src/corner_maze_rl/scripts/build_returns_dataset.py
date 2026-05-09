@@ -10,9 +10,7 @@ Writes:
   data/yoked/dataset/actions_with_returns.parquet
 
 Sessions whose (training_group, yoked_session_type) is unmapped (plan §13
-TODO cells: Fixed Cue 1 Twist all groups, VC × Dark Train) are skipped with
-a warning. f1 subjects (CM057+) are also skipped — yoking-pipeline extension
-needed (plan §9.2).
+TODO cell: VC × Dark Train) are skipped with a warning.
 
 KNOWN LIMITATION (post-Phase 1.5 follow-up):
   The yoked action stream covers the FULL behavioural session (exposure
@@ -75,10 +73,7 @@ from corner_maze_rl.data.load import (
     load_subjects,
     load_actions_for_session,
 )
-from corner_maze_rl.data.session_types import (
-    F1_SUBJECT_NAMES,
-    map_session_to_env_kwargs,
-)
+from corner_maze_rl.data.session_types import map_session_to_env_kwargs
 from corner_maze_rl.env.corner_maze_env import CornerMazeEnv
 
 
@@ -88,6 +83,7 @@ def _build_env_factory(
     yoked_session_type: str,
     cue_goal_orientation: str,
     start_goal_location: str | None = None,
+    trial_configs: list | None = None,
 ):
     """Return a zero-arg env factory or None if unmapped."""
     kwargs = map_session_to_env_kwargs(
@@ -95,6 +91,7 @@ def _build_env_factory(
         yoked_session_type=yoked_session_type,
         cue_goal_orientation=cue_goal_orientation,
         start_goal_location=start_goal_location,
+        trial_configs=trial_configs,
     )
     if kwargs is None:
         return None
@@ -112,8 +109,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", default="data/yoked/dataset/actions_with_returns.parquet",
                    help="output parquet path")
     p.add_argument("--actions-variant", default="synthetic_pretrial",
-                   choices=["synthetic_pretrial", "real_pretrial"],
-                   help="which actions_*.parquet to consume")
+                   choices=["synthetic_pretrial", "real_pretrial", "exposure"],
+                   help="which actions_*.parquet to consume. 'exposure' is "
+                        "available but currently unused — session_types.py has "
+                        "no Exposure paradigm mapping yet (plan §11 follow-up).")
     p.add_argument("--limit-subjects", type=int, default=None,
                    help="process only the first N subjects (for smoke testing)")
     p.add_argument("--limit-sessions", type=int, default=None,
@@ -134,7 +133,6 @@ def main(argv: list[str] | None = None) -> int:
         sessions = sessions[sessions["subject_id"].isin(subjects["subject_id"])]
 
     skipped_unmapped: list[tuple[str, str]] = []
-    skipped_f1: list[str] = []
     failed: list[tuple[int, str]] = []
     chunks: list[pd.DataFrame] = []
 
@@ -145,11 +143,6 @@ def main(argv: list[str] | None = None) -> int:
     pbar = tqdm(total=len(sessions), desc="sessions")
     for _, subj in subj_iter:
         subj_name = str(subj["subject_name"])
-        if subj_name in F1_SUBJECT_NAMES:
-            skipped_f1.append(subj_name)
-            n = (sessions["subject_id"] == subj["subject_id"]).sum()
-            pbar.update(n)
-            continue
 
         subj_sessions = sessions[sessions["subject_id"] == subj["subject_id"]] \
             .sort_values("session_number")
@@ -158,11 +151,17 @@ def main(argv: list[str] | None = None) -> int:
 
         for _, sess in subj_sessions.iterrows():
             pbar.update(1)
+            raw_tc = sess["trial_configs"]
+            try:
+                parsed_tc = json.loads(raw_tc) if isinstance(raw_tc, str) else list(raw_tc)
+            except (TypeError, json.JSONDecodeError):
+                parsed_tc = None
             factory = _build_env_factory(
                 training_group=str(subj["training_group"]),
                 yoked_session_type=str(sess["session_type"]),
                 cue_goal_orientation=str(subj["cue_goal_orientation"]),
                 start_goal_location=_first_trial_goal(sess["trial_configs"]),
+                trial_configs=parsed_tc,
             )
             if factory is None:
                 skipped_unmapped.append(
@@ -205,9 +204,6 @@ def main(argv: list[str] | None = None) -> int:
         for pair in sorted(set(skipped_unmapped)):
             n = skipped_unmapped.count(pair)
             print(f"    {pair}: {n} sessions skipped")
-    if skipped_f1:
-        print(f"  f1 subjects skipped: {len(skipped_f1)} "
-              f"({', '.join(sorted(set(skipped_f1)))})")
     if failed:
         print(f"  FAILED: {len(failed)} sessions")
         for sid, err in failed[:10]:

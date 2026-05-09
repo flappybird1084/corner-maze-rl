@@ -38,15 +38,18 @@ else
     echo "  (skip — eye-image parquet not present in legacy)"
 fi
 
-# Yoked dataset (3-table normalized form)
+# Yoked dataset (5-table normalized form). Prefer copying a pre-built dataset
+# from the legacy repo if present; otherwise rebuild via the in-tree pipeline
+# (see src/corner_maze_rl/yoking/, requires CORNER_MAZE_ANALYSIS_DIR set).
 mkdir -p "$REPO_ROOT/data/yoked/dataset"
 for f in subjects.parquet sessions.parquet \
-         actions_synthetic_pretrial.parquet actions_real_pretrial.parquet; do
+         actions_synthetic_pretrial.parquet actions_real_pretrial.parquet \
+         actions_exposure.parquet; do
     src="$LEGACY/data/yoked/dataset/$f"
     if [[ -f "$src" ]]; then
         cp -v "$src" "$REPO_ROOT/data/yoked/dataset/"
     else
-        echo "  (skip — not present in legacy: $f)"
+        echo "  (skip — not present in legacy: $f; use 'corner-maze-build-dataset' to regenerate)"
     fi
 done
 

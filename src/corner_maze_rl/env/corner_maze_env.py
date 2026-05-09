@@ -199,6 +199,7 @@ class CornerMazeEnv(MiniGridEnv):
         obs_mode: str = "view",
         criterion_threshold: float = CRITERION_SCORE_THRESHOLD,
         criterion_consecutive: int = CRITERION_CONSECUTIVE_REQUIRED,
+        trial_configs: list | None = None,
         **kwargs,
     ):
         self.agent_start_pos = agent_start_pos
@@ -216,6 +217,11 @@ class CornerMazeEnv(MiniGridEnv):
         self.session_type = session_type
         self.agent_cue_goal_orientation = agent_cue_goal_orientation
         self.start_goal_location = start_goal_location
+        # When supplied, gen_grid_configuration_sequence skips the random
+        # SESSION_GENERATORS shuffle and uses this list verbatim. Used by
+        # yoked replay so the env's start arm / cue / goal sequence
+        # matches the rat's actual recorded trials.
+        self._fixed_trial_configs = trial_configs
 
         # Observation mode: "view" (21x21x3 RGB), "embedding" (60D vector),
         # or "stereo" (96x96x2 stereo eye images)
@@ -1070,6 +1076,14 @@ class CornerMazeEnv(MiniGridEnv):
         if generator is None:
             print('Invalid session type')
             start_goal_cue_list = None
+        elif self._fixed_trial_configs:
+            # Yoked replay path: skip the random SESSION_GENERATORS shuffle
+            # and use the rat's actual (start_arm, cue, goal, tag) trials
+            # so trigger cells fire at the same step the rat experienced
+            # them. The dataset stores trial_configs as a list of
+            # [arm, cue, goal, tag] entries — same 4-shape the rest of
+            # this method consumes.
+            start_goal_cue_list = [tuple(tc) for tc in self._fixed_trial_configs]
         else:
             start_goal_cue_list = generator()
 
