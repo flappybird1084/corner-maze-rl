@@ -2,8 +2,8 @@
 
 Source layout
 -------------
-    <RNM2>/data/parquet/sessions/CM<id>/CM<id>_pre1.parquet  (exposure A)
-    <RNM2>/data/parquet/sessions/CM<id>/CM<id>_pre2.parquet  (exposure B)
+    <LEGACY_DATA>/data/parquet/sessions/CM<id>/CM<id>_pre1.parquet  (exposure A)
+    <LEGACY_DATA>/data/parquet/sessions/CM<id>/CM<id>_pre2.parquet  (exposure B)
 
 Per-row columns: [filestem, X, Y, D, A, B, R].
 
@@ -50,8 +50,8 @@ def deterministic_seed(name: str, stype: str) -> int:
     return int(h[:6], 16)
 
 
-def discover(rnm2_root: Path) -> list[tuple[str, str, Path]]:
-    sessions_root = rnm2_root / "data" / "parquet" / "sessions"
+def discover(legacy_data_root: Path) -> list[tuple[str, str, Path]]:
+    sessions_root = legacy_data_root / "data" / "parquet" / "sessions"
     if not sessions_root.is_dir():
         raise FileNotFoundError(f"sessions dir not found: {sessions_root}")
     out: list[tuple[str, str, Path]] = []
@@ -104,10 +104,10 @@ def build_sessions_and_actions(
     return sessions, actions
 
 
-def build(rnm2_root: Path, out_dir: Path) -> None:
-    records = discover(rnm2_root)
+def build(legacy_data_root: Path, out_dir: Path) -> None:
+    records = discover(legacy_data_root)
     if not records:
-        raise RuntimeError(f"no session parquets discovered under {rnm2_root}")
+        raise RuntimeError(f"no session parquets discovered under {legacy_data_root}")
 
     rats = sorted({r for r, _, _ in records})
     subjects = build_subjects(rats)
@@ -129,12 +129,12 @@ def build(rnm2_root: Path, out_dir: Path) -> None:
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--rnm2-root", default="../rat-neural-model-2",
+    p.add_argument("--legacy-data-root", default="../rat-neural-model-2",
                    help="path to rat-neural-model-2 checkout")
     p.add_argument("--out", default="data/yoked/dataset",
                    help="output dir for the 3-table yoked dataset")
     args = p.parse_args()
-    build(Path(args.rnm2_root), Path(args.out))
+    build(Path(args.legacy_data_root), Path(args.out))
     return 0
 
 
