@@ -211,6 +211,148 @@ def _remap_blocked_to_neighbor(grid_x, grid_y, blocked, valid=None):
             grid_y[i] = best[1]
 
 
+def _simulate_iti_barriers_per_frame(grid_x, grid_y, iti_configs, initial_idx, BL, TL):
+    """Walk the rat's mapped frames and replicate the env's ITI sub-config
+    flips along the path. Return a list of barrier sets (one per frame)
+    representing the env's active barriers at that frame.
+
+    The env flips `_iti_config_idx` when the agent steps on an A or B trigger
+    cell. After flipping, the new sub-config typically has only S triggers
+    (no further A/B), so at most one flip per ITI in practice — but this
+    function handles any chain.
+    """
+    n = len(grid_x)
+    if n == 0:
+        return []
+    current_layout = iti_configs[initial_idx]
+    current_idx = initial_idx
+    out = []
+    for i in range(n):
+        barriers = {BL[k] for k in range(16) if current_layout[1 + k] == 1}
+        out.append(barriers)
+        pos = (int(grid_x[i]), int(grid_y[i]))
+        # Trigger fire: agent on a cell whose trigger slot is A (1) or B (2)
+        for k in range(12):
+            if TL[k] == pos:
+                tval = current_layout[25 + k]
+                if tval == 1 and current_idx != 1:
+                    current_idx = 1
+                    current_layout = iti_configs[1]
+                elif tval == 2 and current_idx != 2:
+                    current_idx = 2
+                    current_layout = iti_configs[2]
+                break
+    return out
+
+
+def _remap_with_per_frame_barriers(grid_x, grid_y, blocked_per_frame, anchor):
+    """Per-frame variant of barrier+connectivity remap.
+
+    For each frame i, if (gx[i], gy[i]) is in `blocked_per_frame[i]` or is
+    walkable-but-unreachable from the most recently validated position
+    given those barriers, remap to the nearest reachable cell. The anchor
+    advances to the last validated reachable position so reachability
+    tracks the rat's actual progress through the segment.
+
+    Modifies arrays in-place.
+    """
+    n = len(grid_x)
+    if n == 0 or anchor is None:
+        return
+    cur_anchor = anchor
+    cached_reach = None
+    cached_blocked = None
+    for i in range(n):
+        blocked = blocked_per_frame[i]
+        if cached_blocked is not blocked:
+            cached_reach = _reachable_from(cur_anchor, blocked)
+            cached_blocked = blocked
+        pos = (int(grid_x[i]), int(grid_y[i]))
+        if pos in WELL_POSITIONS:
+            continue
+        if pos in cached_reach and pos not in blocked:
+            cur_anchor = pos
+            continue
+        candidates = sorted(cached_reach - WELL_POSITIONS)
+        if not candidates:
+            continue
+        best = None
+        best_dist = float('inf')
+        for c in candidates:
+            d = abs(c[0] - pos[0]) + abs(c[1] - pos[1])
+            if d < best_dist:
+                best_dist = d
+                best = c
+        if best is not None:
+            grid_x[i] = best[0]
+            grid_y[i] = best[1]
+            cur_anchor = best
+
+
+def _reachable_from(anchor, blocked):
+    """BFS-reachable walkable cells from `anchor` given the active barrier set.
+
+    Treats well positions as reachable when their corner is reachable
+    (rats reach wells via corners, and corners are walkable cells).
+    """
+    if anchor not in WALKABLE_CELLS:
+        return set()
+    reachable = {anchor}
+    queue = deque([anchor])
+    while queue:
+        pos = queue.popleft()
+        for dx, dy in ((1, 0), (0, 1), (-1, 0), (0, -1)):
+            nxt = (pos[0] + dx, pos[1] + dy)
+            if nxt in reachable:
+                continue
+            if nxt not in WALKABLE_CELLS:
+                continue
+            if blocked and nxt in blocked:
+                continue
+            reachable.add(nxt)
+            queue.append(nxt)
+    for corner, well in CORNER_TO_WELL.items():
+        if corner in reachable:
+            reachable.add(well)
+    return reachable
+
+
+def _remap_unreachable_to_reachable(grid_x, grid_y, blocked, anchor):
+    """Remap frames mapped to barrier-isolated pockets back to reachable cells.
+
+    Same shape as `_remap_blocked_to_neighbor` but the criterion is BFS
+    reachability from `anchor` given `blocked`, not membership in the barrier
+    set. Catches frames that landed on technically-walkable cells which are
+    cut off by active barriers (e.g. (10,6) in `trl_w_s_sw` where (10,5) and
+    (10,7) are barriers).
+
+    Modifies arrays in-place. Skips well positions.
+    """
+    if anchor is None:
+        return
+    reachable = _reachable_from(anchor, blocked)
+    if not reachable:
+        return
+    candidates = sorted(reachable - WELL_POSITIONS)
+    if not candidates:
+        return
+    n = len(grid_x)
+    for i in range(n):
+        pos = (int(grid_x[i]), int(grid_y[i]))
+        if pos in reachable or pos in WELL_POSITIONS:
+            continue
+        best = None
+        best_dist = float('inf')
+        for c in candidates:
+            d = abs(c[0] - pos[0]) + abs(c[1] - pos[1])
+            if d < best_dist:
+                best_dist = d
+                best = c
+        if best is not None:
+            grid_x[i] = best[0]
+            grid_y[i] = best[1]
+
+
 # ── Pause action generation ───────────────────
 def _pause_count(dwell_ms, pause_threshold_ms, consolidate_pauses):
     """Return number of PAUSE actions for a dwell duration.
@@ -981,6 +1123,26 @@ def _generate_segment_actions(runs, timestamps, current_pos, current_dir,
                     ri += 1
                     continue
                 else:
+                    # Dest doesn't directly match L_dest or F_dest, but if
+                    # the BFS path from corner to dest passes through one of
+                    # them as its first hop, emit the corner-trick action
+                    # (env collapses turn-and-step into one step) and fall
+                    # through to the regular BFS bridge below to walk the
+                    # remaining cells from the new position. This handles
+                    # tracker phantom jumps that skip past the corner-trick
+                    # destination, e.g. (10,2)→(10,6) skipping (10,3).
+                    trick_path = find_path(current_pos, dest, blocked=blocked)
+                    if trick_path and len(trick_path) >= 2:
+                        if trick_path[1] == left_dest[0]:
+                            output.append((ACT_LEFT, current_pos[0], current_pos[1],
+                                           current_dir, 0))
+                            current_pos = left_dest[0]
+                            current_dir = left_dest[1]
+                        elif trick_path[1] == fwd_dest[0]:
+                            output.append((ACT_FORWARD, current_pos[0], current_pos[1],
+                                           current_dir, 0))
+                            current_pos = fwd_dest[0]
+                            current_dir = fwd_dest[1]
                     at_well_exit = False
 
             # Use current_pos (not pos) for movement — they may differ
@@ -1055,6 +1217,7 @@ def generate_acquisition_actions(
     max_gap: int = 2,
     trial_barrier_sets: list | None = None,
     iti_barrier_sets: list | None = None,
+    iti_sim_configs: list | None = None,
     use_real_pretrial: bool = False,
     consolidate_pauses: bool = True,
 ) -> list:
@@ -1165,12 +1328,16 @@ def generate_acquisition_actions(
             ].reset_index(drop=True)
 
             if len(trial_df) > 0:
-                # Remap barrier positions to nearest walkable neighbor
+                # Remap barrier positions to nearest walkable neighbor, then
+                # remap any remaining frames that landed in barrier-isolated
+                # pockets (walkable cells unreachable from `current_pos` given
+                # the active barrier set).
                 if trial_barrier_sets and trial_idx < len(trial_barrier_sets):
                     barriers = trial_barrier_sets[trial_idx]
                     gx_arr = trial_df['grid_x'].values.copy()
                     gy_arr = trial_df['grid_y'].values.copy()
                     _remap_blocked_to_neighbor(gx_arr, gy_arr, barriers)
+                    _remap_unreachable_to_reachable(gx_arr, gy_arr, barriers, current_pos)
                     trial_df = trial_df.copy()
                     trial_df['grid_x'] = gx_arr
                     trial_df['grid_y'] = gy_arr
@@ -1270,6 +1437,43 @@ def generate_acquisition_actions(
             ].reset_index(drop=True)
 
             if len(iti_df) > 0:
+                # Apply barrier+connectivity remap using the env's *currently
+                # active* barrier set per frame. The env flips
+                # `_iti_config_idx` when the agent steps on an A/B trigger,
+                # so the active barrier set is not constant across the ITI.
+                # Co-simulate the layout swap along the rat's mapped path
+                # and remap each frame against the barriers active at that
+                # frame. Falls back to the static initial set if sim configs
+                # weren't supplied.
+                gx_arr = iti_df['grid_x'].values.copy()
+                gy_arr = iti_df['grid_y'].values.copy()
+                used_per_frame = False
+                if (iti_sim_configs and trial_idx < len(iti_sim_configs)
+                        and iti_sim_configs[trial_idx] is not None):
+                    from corner_maze_rl.env.constants import (
+                        BARRIER_LOCATIONS as _SIM_BL,
+                        TRIGGER_LOCATIONS as _SIM_TL,
+                    )
+                    sim_iti_configs, sim_initial_idx = iti_sim_configs[trial_idx]
+                    blocked_per_frame = _simulate_iti_barriers_per_frame(
+                        gx_arr, gy_arr, sim_iti_configs, sim_initial_idx,
+                        _SIM_BL, _SIM_TL,
+                    )
+                    _remap_with_per_frame_barriers(
+                        gx_arr, gy_arr, blocked_per_frame, current_pos
+                    )
+                    used_per_frame = True
+                elif iti_barrier_sets and trial_idx < len(iti_barrier_sets):
+                    iti_barriers = iti_barrier_sets[trial_idx]
+                    if iti_barriers:
+                        _remap_blocked_to_neighbor(gx_arr, gy_arr, iti_barriers)
+                        _remap_unreachable_to_reachable(gx_arr, gy_arr, iti_barriers, current_pos)
+                if used_per_frame or (iti_barrier_sets and trial_idx < len(iti_barrier_sets)
+                                      and iti_barrier_sets[trial_idx]):
+                    iti_df = iti_df.copy()
+                    iti_df['grid_x'] = gx_arr
+                    iti_df['grid_y'] = gy_arr
+
                 grid_x = iti_df['grid_x'].values
                 grid_y = iti_df['grid_y'].values
                 timestamps = iti_df['t_ms'].values.astype(float)
@@ -1283,6 +1487,62 @@ def generate_acquisition_actions(
                 # tracking data contains the remaining trial navigation.
                 # Process it with trial barriers until the goal is reached,
                 # then fall through to normal ITI processing for the rest.
+                if not trial_reached_goal and runs:
+                    trial_blocked = trial_barrier_sets[trial_idx] if trial_barrier_sets else None
+                    goal_idx = trial_configs[trial_idx][2]
+                    is_last = (trial_idx == len(trial_numbers) - 1)
+                    goal_well_pos = _GOAL_TO_WELL.get(goal_idx)
+
+                    # Goal-well-as-first-run synthesis. When the ITI runs start
+                    # *at* the goal well (the rat's tracker placed the rat in
+                    # the well at the start of ITI-phase data, often because
+                    # the trial phase boundary closed at the well visit), the
+                    # segment generator's well-visit detection won't fire — it
+                    # requires a (corner, well) run pair, but here there's no
+                    # preceding corner run. Synthesize the last-mile path from
+                    # current_pos to the goal corner, emit the well-visit
+                    # block (PICKUP+RR/LL+F), and slice off the goal-well run
+                    # so the rest of the runs can be processed as normal ITI.
+                    if (goal_well_pos and runs
+                            and (runs[0][0], runs[0][1]) == goal_well_pos):
+                        goal_corner = WELL_TO_CORNER.get(goal_well_pos)
+                        is_rewarded = trial_rewarded_map.get(trial_num, False)
+                        if goal_corner and current_pos != goal_corner:
+                            path = find_path(current_pos, goal_corner, blocked=trial_blocked)
+                            if path and len(path) >= 2:
+                                for step_i in range(len(path) - 1):
+                                    sdx = path[step_i + 1][0] - path[step_i][0]
+                                    sdy = path[step_i + 1][1] - path[step_i][1]
+                                    target_dir = DELTA_TO_DIR[(sdx, sdy)]
+                                    for act in turn_actions(current_dir, target_dir, rng):
+                                        output.append((act, current_pos[0], current_pos[1],
+                                                       current_dir, 0))
+                                        if act == ACT_LEFT:
+                                            current_dir = (current_dir - 1) % 4
+                                        elif act == ACT_RIGHT:
+                                            current_dir = (current_dir + 1) % 4
+                                    output.append((ACT_FORWARD, current_pos[0], current_pos[1],
+                                                   current_dir, 0))
+                                    current_pos = path[step_i + 1]
+                        if current_pos == goal_corner:
+                            well_acts, exit_pos, exit_dir = well_visit_actions(goal_well_pos, rng)
+                            for act in well_acts:
+                                rew_flag = 1 if (act == ACT_PICKUP and is_rewarded) else 0
+                                output.append((act, current_pos[0], current_pos[1],
+                                               current_dir, rew_flag))
+                                if act == ACT_PICKUP:
+                                    current_pos = goal_well_pos
+                                    current_dir = WELL_ENTRY_DIR[goal_well_pos]
+                                elif act == ACT_FORWARD and current_pos in WELL_POSITIONS:
+                                    current_pos = exit_pos
+                                    current_dir = exit_dir
+                                elif act == ACT_LEFT:
+                                    current_dir = (current_dir - 1) % 4
+                                elif act == ACT_RIGHT:
+                                    current_dir = (current_dir + 1) % 4
+                            trial_reached_goal = True
+                            runs = runs[1:]  # drop the goal-well run
+
                 if not trial_reached_goal and runs:
                     trial_blocked = trial_barrier_sets[trial_idx] if trial_barrier_sets else None
                     goal_idx = trial_configs[trial_idx][2]
@@ -1358,6 +1618,51 @@ def generate_acquisition_actions(
                     first_run_pos = (int(runs[0][0]), int(runs[0][1]))
 
                     iti_blocked = iti_barrier_sets[trial_idx] if iti_barrier_sets else None
+
+                    # Well-exit corner L/F: when the rat just exited a well
+                    # and the first ITI run is the L-trick or F-trick
+                    # destination, emit a single corner-trick action. The
+                    # env collapses L (or F) at a CORNER+WELL_EXIT_POSE into
+                    # a combined turn-and-step, so a regular bridge that
+                    # emits L+F here would double-count the move and create
+                    # a phantom (corner, post-L-dir) frame. Run BEFORE the
+                    # bridge so the corner-trick wins when the tracker
+                    # skipped the corner frame entirely (e.g. went directly
+                    # from well to next corridor cell).
+                    well_exit_handled = False
+                    if current_pos in _WELL_EXIT_LEFT and first_run_pos != current_pos:
+                        left_dest = _WELL_EXIT_LEFT[current_pos]
+                        fwd_dest = _WELL_EXIT_FORWARD[current_pos]
+                        if first_run_pos == left_dest[0]:
+                            output.append((ACT_LEFT, current_pos[0], current_pos[1],
+                                           current_dir, 0))
+                            current_pos = left_dest[0]
+                            current_dir = left_dest[1]
+                            well_exit_handled = True
+                        elif first_run_pos == fwd_dest[0]:
+                            output.append((ACT_FORWARD, current_pos[0], current_pos[1],
+                                           current_dir, 0))
+                            current_pos = fwd_dest[0]
+                            current_dir = fwd_dest[1]
+                            well_exit_handled = True
+                        else:
+                            # first_run_pos is further than the corner-trick
+                            # destination, but if the BFS path's first hop is
+                            # left_dest or fwd_dest, emit the corner-trick
+                            # action and let the bridge below walk the rest.
+                            tp = find_path(current_pos, first_run_pos, blocked=iti_blocked)
+                            if tp and len(tp) >= 2:
+                                if tp[1] == left_dest[0]:
+                                    output.append((ACT_LEFT, current_pos[0], current_pos[1],
+                                                   current_dir, 0))
+                                    current_pos = left_dest[0]
+                                    current_dir = left_dest[1]
+                                elif tp[1] == fwd_dest[0]:
+                                    output.append((ACT_FORWARD, current_pos[0], current_pos[1],
+                                                   current_dir, 0))
+                                    current_pos = fwd_dest[0]
+                                    current_dir = fwd_dest[1]
+
                     bridged_to_first = False
                     if first_run_pos != current_pos:
                         path = find_path(current_pos, first_run_pos, blocked=iti_blocked)
@@ -1397,28 +1702,9 @@ def generate_acquisition_actions(
                                 seg_dir = DELTA_TO_DIR[(pdx, pdy)]
                                 break
 
-                    # Well-exit corner: first move uses L/F to choose corridor
-                    well_exit_handled = False
-                    if current_pos in _WELL_EXIT_LEFT and first_run_pos != current_pos:
-                        left_dest = _WELL_EXIT_LEFT[current_pos]
-                        fwd_dest = _WELL_EXIT_FORWARD[current_pos]
-                        if first_run_pos == left_dest[0]:
-                            output.append((ACT_LEFT, current_pos[0], current_pos[1],
-                                           current_dir, 0))
-                            current_pos = left_dest[0]
-                            current_dir = left_dest[1]
-                            well_exit_handled = True
-                        elif first_run_pos == fwd_dest[0]:
-                            output.append((ACT_FORWARD, current_pos[0], current_pos[1],
-                                           current_dir, 0))
-                            current_pos = fwd_dest[0]
-                            current_dir = fwd_dest[1]
-                            well_exit_handled = True
-
-                    if not well_exit_handled:
+                    if not well_exit_handled and not bridged_to_first:
                         current_pos = first_run_pos
 
-                    iti_blocked = iti_barrier_sets[trial_idx] if iti_barrier_sets else None
                     # Pass well-exit state if still at corner (L/F choice pending).
                     # Only set if the agent actually just exited a well
                     # (not if it merely navigated to a corner via bridge).
@@ -1569,16 +1855,30 @@ def generate_exposure_b_actions(
         barrier_runs = []
         reward_phase_start_idx = len(runs)  # default: all barrier
 
+        # Sustained-and-sequential filter: only advance barrier_stage one
+        # stage at a time (no skipping), and only when the run at the
+        # zone-advance cell is sustained (≥5 frames after consolidation).
+        # The env's trigger system requires sequential crossings: visiting
+        # (6,8) in stage 2 isn't a trigger event because the (6,8)-→stage-5
+        # trigger is only armed in stage 4. Without this, brief phantom
+        # visits at later-stage zones cause yoking to jump ahead of env.
+        _ZONE_ADVANCE_MIN_FRAMES = 5
         for ri, (gx, gy, s, e) in enumerate(runs):
             pos = (gx, gy)
             if pos in _EXPB_ZONE_ADVANCE:
                 new_stage = _EXPB_ZONE_ADVANCE[pos]
-                if new_stage > barrier_stage:
+                run_len = e - s
+                if (new_stage == barrier_stage + 1
+                        and run_len >= _ZONE_ADVANCE_MIN_FRAMES):
                     barrier_stage = new_stage
                     # Mark that delay pauses are needed after this run
                     barrier_runs.append((gx, gy, s, e))
                     barrier_runs.append('DELAY')  # sentinel for delay insert
                     continue
+                # Out-of-order or brief-flicker zone-advance hit: don't
+                # advance stage. Fall through to reachable-set check —
+                # the cell will be emitted only if it's in the current
+                # stage's reachable set.
 
             if barrier_stage >= 5:
                 reward_phase_start_idx = ri
@@ -1765,6 +2065,7 @@ def build_action_sequence(
 
     # Compute per-trial barrier positions for acquisition sessions
     trial_barrier_sets = None
+    iti_sim_configs = None
     if trial_configs is not None and 'phase' in grid_df.columns:
         from corner_maze_rl.env.corner_maze_env import CornerMazeEnv as _Env
         from corner_maze_rl.env.constants import BARRIER_LOCATIONS as _BL
@@ -1772,6 +2073,7 @@ def build_action_sequence(
         _tmp_env.reset()
         trial_barrier_sets = []
         iti_barrier_sets = []
+        iti_sim_configs = []  # (iti_configs_tuple3, initial_idx) per ITI for co-sim
         for ti, cfg in enumerate(trial_configs):
             # Trial barriers
             layout = _tmp_env.maze_config_trl_list[cfg[0]][cfg[1]][cfg[2]]
@@ -1795,8 +2097,10 @@ def build_action_sequence(
                 iti_layout = iti_configs[config_idx]
                 iti_barriers = {_BL[i] for i in range(16) if iti_layout[1 + i] == 1}
                 iti_barrier_sets.append(iti_barriers)
+                iti_sim_configs.append((iti_configs, config_idx))
             else:
                 iti_barrier_sets.append(set())
+                iti_sim_configs.append(None)
         _tmp_env.close()
 
     # Phase-aware path for acquisition sessions
@@ -1806,6 +2110,7 @@ def build_action_sequence(
             build_pause, pause_threshold_ms, max_gap,
             trial_barrier_sets=trial_barrier_sets,
             iti_barrier_sets=iti_barrier_sets,
+            iti_sim_configs=iti_sim_configs,
             use_real_pretrial=use_real_pretrial,
             consolidate_pauses=consolidate_pauses,
         )
