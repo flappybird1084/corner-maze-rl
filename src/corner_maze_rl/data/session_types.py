@@ -17,6 +17,11 @@ from typing import Mapping
 
 # (training_group, yoked_session_type) → env paradigm string
 PARADIGM_MAP: Mapping[tuple[str, str], str] = {
+    # Exposure paradigms — same env regardless of training_group, so we only
+    # need PI rows; downstream converters set training_group="PI" for all rats
+    # when only exposure data is available.
+    ("PI", "exposure"):    "exposure",
+    ("PI", "exposure_b"):  "exposure_b",
     # PI+VC
     ("PI+VC", "Rotate Train"):   "PI+VC f2 rotate",
     ("PI+VC", "Fixed Cue 1"):    "PI+VC f2 novel route",
