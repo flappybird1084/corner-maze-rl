@@ -10,6 +10,7 @@ ai-venv/
 .vscode/
 .DS_Store
 CLAUDE.md
+.claude/
 
 # Run outputs / model artifacts
 runs/
