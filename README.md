@@ -45,7 +45,8 @@ corner-maze-rl/
 │   ├── environment-architecture.md
 │   ├── maze-behavior-spec.md  # 2S2C task rules
 │   ├── reward-structure-analysis.md
-│   └── sr-yoked-negative-results.md
+│   ├── sr-yoked-negative-results.md
+│   └── yoked-data-from-legacy-data.md  # exposure-only yoked dataset converter
 ├── src/corner_maze_rl/        # (to be built — see plan §3)
 ├── notebooks/                 # interactive notebooks (VS Code recommended)
 ├── data/                      # (gitignored; setup script will populate)
@@ -59,6 +60,19 @@ corner-maze-rl/
 3. [md/environment-architecture.md](md/environment-architecture.md) — env spec the code is built against.
 4. [md/reward-structure-analysis.md](md/reward-structure-analysis.md) — *why* the reward shaping is what it is.
 5. [md/sr-yoked-negative-results.md](md/sr-yoked-negative-results.md) — a documented negative result (SR fails on yoked data); the plan's §10.3 frames how to report findings like this scientifically.
+6. [md/yoked-data-from-legacy-data.md](md/yoked-data-from-legacy-data.md) — how to build a (currently exposure-only) yoked dataset from `../rat-neural-model-2` when the canonical legacy yoking output isn't available; covers schema mismatch, conversion strategy, and limitations.
+
+## Yoked dataset
+
+The plan's `setup_data.sh` assumes a canonical 3-table yoked dataset has been produced by the legacy yoking pipeline; that pipeline isn't yet published. As a stopgap, `scripts/build_yoked_from_legacy_data.py` builds an **exposure-only** yoked dataset from a sibling `rat-neural-model-2` checkout. Full design notes + caveats in [md/yoked-data-from-legacy-data.md](md/yoked-data-from-legacy-data.md).
+
+```bash
+.venv/bin/python scripts/build_yoked_from_legacy_data.py \
+    --legacy-data-root ../rat-neural-model-2
+.venv/bin/python -m corner_maze_rl.scripts.build_returns_dataset \
+    --dataset-dir data/yoked/dataset \
+    --actions-variant real_pretrial
+```
 
 ## Related projects
 
