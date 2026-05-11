@@ -16,15 +16,16 @@ CLAUDE.md
 runs/
 model-data/
 
-# Yoked dataset (large; copied from legacy via setup script)
-data/yoked/
-data/encoders/
-data/dataframes/
-# Catch the same dirs anywhere in the tree (e.g. notebooks/data/...)
-# in case a notebook auto-downloads relative to CWD.
-**/data/yoked/
-**/data/encoders/
-**/data/dataframes/
+# Per-session yoked parquets (intermediate artifacts; regeneratable from upstream
+# via corner-maze-build-yoked). The aggregated dataset at data/yoked/dataset/
+# IS committed.
+data/yoked/*.parquet
+**/data/yoked/*.parquet
+
+# Notebooks that auto-download data relative to their own CWD end up with
+# a redundant data/ tree under notebooks/. The canonical data lives at the
+# repo-root data/.
+notebooks/data/
 
 # Pytest / coverage
 .pytest_cache/
