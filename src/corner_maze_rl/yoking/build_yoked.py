@@ -262,6 +262,13 @@ def process_session(
     if len(actions_df) == 0:
         return {'session_id': session_id, 'status': 'skipped', 'reason': 'no actions generated'}
 
+    # Sync trial_configs to the truncated action stream. build_action_sequence
+    # trims at the last rewarded PICKUP; trial_configs must follow so that
+    # n_trials == n_rewards == len(trial_configs) downstream.
+    if trial_configs:
+        n_rewards = int(actions_df['rewarded'].sum())
+        trial_configs = trial_configs[:n_rewards]
+
     # 4. Save to parquet with metadata
     # Filename distinguishes pretrial variant for acquisition (synthetic vs real);
     # exposure has no pretrial concept so the suffix is omitted there.

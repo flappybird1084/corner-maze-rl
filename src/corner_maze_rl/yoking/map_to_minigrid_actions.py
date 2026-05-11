@@ -475,7 +475,7 @@ def generate_real_pretrial_actions(pretrial_df, arm, rng,
         (output, current_pos, current_dir) where output is a list of
         (action, gx, gy, direction, rewarded) tuples.
     """
-    from map_to_minigrid import zone_to_grid
+    from .map_to_minigrid import zone_to_grid
 
     valid_cells = _PRETRIAL_VALID_CELLS[arm]
     trigger_pos = _PRETRIAL_TRIGGER_GRID[arm]
@@ -2155,26 +2155,18 @@ def build_action_sequence(
     if not output:
         return pd.DataFrame(columns=['step', 'action', 'grid_x', 'grid_y', 'direction', 'rewarded'])
 
-    # Trim after last rewarded action if the rat reached the session's
-    # max reward count (env terminates there). If the rat didn't reach
-    # the max, the session continued and trailing data is kept.
-    n_rewards = sum(1 for o in output if o[4] == 1)
-    expected_max = None
-    if trial_configs is not None:
-        expected_max = len(trial_configs)
-    elif session_number == '2e':
-        expected_max = 33  # EXPB_NUM_REWARDS
-    elif session_number == '1e':
-        expected_max = 32  # EXPOSURE_NUM_REWARDS
-
-    if expected_max is not None and n_rewards >= expected_max:
-        last_reward_idx = None
-        for idx in range(len(output) - 1, -1, -1):
-            if output[idx][4] == 1:
-                last_reward_idx = idx
-                break
-        if last_reward_idx is not None:
-            output = output[:last_reward_idx + 1]
+    # Truncate at the last rewarded PICKUP. DT per-trial RTG requires every
+    # session to end on a real reward — no dangling pretrial, aborted trial
+    # nav, wrong-well-only final trial, or post-final-reward ITI. If no
+    # rewarded action exists, the session has no usable signal and is dropped.
+    last_reward_idx = None
+    for idx in range(len(output) - 1, -1, -1):
+        if output[idx][4] == 1:
+            last_reward_idx = idx
+            break
+    if last_reward_idx is None:
+        return pd.DataFrame(columns=['step', 'action', 'grid_x', 'grid_y', 'direction', 'rewarded'])
+    output = output[:last_reward_idx + 1]
 
     out_df = pd.DataFrame(output, columns=['action', 'grid_x', 'grid_y', 'direction', 'rewarded'])
     out_df.insert(0, 'step', range(len(out_df)))

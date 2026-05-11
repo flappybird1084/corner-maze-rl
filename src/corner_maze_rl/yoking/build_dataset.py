@@ -200,6 +200,43 @@ def main():
                 f'(expected {expected!r}, first 5: {wrong[:5]})'
             )
 
+    # Terminal-action invariant: every session's last row must be a rewarded
+    # PICKUP. DT per-trial RTG depends on this. The pytest in
+    # tests/test_yoked_dataset_invariants.py is the durable contract; this
+    # is the in-build smoke that fails the rebuild fast if anything slips.
+    for bucket, df in output_actions.items():
+        if df is None:
+            continue
+        last_rows = df.sort_values(['session_id', 'step']).groupby(
+            'session_id', as_index=False
+        ).tail(1)
+        bad = last_rows[(last_rows['rewarded'] != 1) | (last_rows['action'] != 3)]
+        if not bad.empty:
+            raise AssertionError(
+                f'{bucket}: {len(bad)} sessions not ending at rewarded PICKUP '
+                f'(first 5 session_ids: {bad["session_id"].tolist()[:5]})'
+            )
+
+    # Per-Acquisition-row count consistency: n_trials == n_rewards == len(trial_configs).
+    import json as _json
+    bad_counts = []
+    for _, row in sessions_df.iterrows():
+        if row['session_phase'] != 'Acquisition':
+            continue
+        configs = _json.loads(row['trial_configs']) if row['trial_configs'] else []
+        if not (row['n_trials'] == row['n_rewards'] == len(configs)):
+            bad_counts.append(
+                (int(row['session_id']), int(row['n_trials']),
+                 int(row['n_rewards']), len(configs))
+            )
+    if bad_counts:
+        raise AssertionError(
+            f'{len(bad_counts)} Acquisition sessions with '
+            f'n_trials/n_rewards/len(trial_configs) mismatch '
+            f'(session_id, n_trials, n_rewards, len_configs; first 5): '
+            f'{bad_counts[:5]}'
+        )
+
     # ── Write ──────────────────────────────────────────────────
     os.makedirs(args.out, exist_ok=True)
 
