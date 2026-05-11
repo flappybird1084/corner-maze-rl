@@ -10,10 +10,13 @@ Builds ``(rtg, state, action)`` context windows per session, then trains a
 ``DecisionTransformer`` (or a sibling architecture via ``--arch``) with AdamW
 and cross-entropy on the rat's action labels.
 
-The RTG conditioning signal is the ``actions_to_reward`` integer column
-(steps until the next reward in the session), cast to float and fed to
-``embed_rtg``. The DT learns to map this conditioning + recent context →
-action distribution.
+The RTG conditioning signal is the per-session suffix sum of the
+``rewarded`` column — the number of remaining rewards from step t to the
+end of the session. Integer-valued, monotonically non-increasing, drops
+by 1 at each reward step. Origin's pipeline clips every session to end
+on a reward step, so RTG=N at the first token (= total session rewards)
+and RTG=0 at the terminal token. The DT learns: condition on rtg=R,
+collect R more rewards by the end.
 
 Outputs (under ``runs/dt/<run_name>/``):
   * model.pt          torch.save of state_dict + cfg
@@ -79,7 +82,9 @@ def encode_session(session_df: pd.DataFrame, encoder) -> dict[str, np.ndarray]:
     ds = session_df["direction"].to_numpy(dtype=np.int32)
     for i in range(n):
         state[i] = encoder.encode(int(xs[i]), int(ys[i]), int(ds[i]))
-    rtg = session_df["actions_to_reward"].to_numpy(dtype=np.float32).reshape(-1, 1)
+    rewarded = session_df["rewarded"].to_numpy(dtype=np.float32)
+    # RTG[t] = sum of future rewards from t to end of session (vanilla-DT contract).
+    rtg = np.flip(np.cumsum(np.flip(rewarded))).astype(np.float32).reshape(-1, 1)
     actions = session_df["action"].to_numpy(dtype=np.int64).clip(0, NUM_ACTIONS - 1)
     action_oh = _one_hot(actions)
     return {"state": state, "action": action_oh, "rtg": rtg, "pos": state.copy()}
