@@ -66,6 +66,7 @@ def _first_trial_goal(trial_configs_blob) -> str | None:
     except (ValueError, TypeError, IndexError, json.JSONDecodeError):
         return None
 
+from corner_maze_rl.data.canonical import canonicalize_session, is_canonicalizable
 from corner_maze_rl.data.compute_returns import compute_returns_for_session
 from corner_maze_rl.data.load import (
     YokedPaths,
@@ -119,6 +120,14 @@ def main(argv: list[str] | None = None) -> int:
                    help="process only the first N sessions per subject")
     p.add_argument("--seed-default", type=int, default=42,
                    help="env reset seed when sessions table doesn't supply one")
+    p.add_argument("--canonicalize", action="store_true",
+                   help="Rotate each canonicalizable session (constant cue per "
+                        "session: PI / PI+VC / PI+VC_f1 Acquisition) so the cue "
+                        "lands at the north arm; rotates trial_configs and "
+                        "(grid_x, grid_y, direction) in lockstep. Multi-cue "
+                        "sessions (VC Rotate Train, future rotate probes) pass "
+                        "through unchanged. Adds 'canonical_R' to the output "
+                        "(0 when not rotated or not canonicalizable).")
     args = p.parse_args(argv)
 
     paths = YokedPaths.from_dir(args.dataset_dir, actions_variant=args.actions_variant)
@@ -156,11 +165,29 @@ def main(argv: list[str] | None = None) -> int:
                 parsed_tc = json.loads(raw_tc) if isinstance(raw_tc, str) else list(raw_tc)
             except (TypeError, json.JSONDecodeError):
                 parsed_tc = None
+
+            try:
+                actions = load_actions_for_session(paths, int(sess["session_id"]))
+            except Exception as e:  # noqa: BLE001
+                failed.append((int(sess["session_id"]), repr(e)))
+                continue
+
+            # Canonicalize before building the env so trial_configs +
+            # actions stay in lockstep. Multi-cue (non-canonicalizable)
+            # sessions are returned unchanged with R=0.
+            canonical_R = 0
+            if args.canonicalize and parsed_tc and is_canonicalizable(parsed_tc):
+                parsed_tc, actions, canonical_R = canonicalize_session(parsed_tc, actions)
+            # Re-derive first_goal from the (possibly rotated) trial_configs.
+            first_goal = (
+                GOAL_IDX_TO_DIR.get(int(parsed_tc[0][2]))
+                if parsed_tc else None
+            )
             factory = _build_env_factory(
                 training_group=str(subj["training_group"]),
                 yoked_session_type=str(sess["session_type"]),
                 cue_goal_orientation=str(subj["cue_goal_orientation"]),
-                start_goal_location=_first_trial_goal(sess["trial_configs"]),
+                start_goal_location=first_goal,
                 trial_configs=parsed_tc,
             )
             if factory is None:
@@ -170,13 +197,13 @@ def main(argv: list[str] | None = None) -> int:
                 continue
 
             try:
-                actions = load_actions_for_session(paths, int(sess["session_id"]))
                 seed = int(sess.get("seed", args.seed_default))
                 out = compute_returns_for_session(actions, factory, seed=seed)
                 # Carry session_id/subject metadata for joins.
                 out["subject_name"] = subj_name
                 out["training_group"] = str(subj["training_group"])
                 out["yoked_session_type"] = str(sess["session_type"])
+                out["canonical_R"] = canonical_R
                 chunks.append(out)
                 grand_total += len(out)
             except Exception as e:  # noqa: BLE001

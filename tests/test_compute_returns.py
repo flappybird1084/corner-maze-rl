@@ -14,7 +14,6 @@ from corner_maze_rl.data.compute_returns import (
     per_cycle_suffix_sum,
 )
 from corner_maze_rl.data.session_types import (
-    F1_SUBJECT_NAMES,
     PARADIGM_MAP,
     assert_subject_group_match,
     is_unmapped,
@@ -188,8 +187,9 @@ def test_assert_subject_group_match_mismatch():
         assert_subject_group_match("VC", "PI+VC")
 
 
-def test_f1_cohort_listed():
-    assert "CM057" in F1_SUBJECT_NAMES
-    assert "CM064" in F1_SUBJECT_NAMES
-    # CM005 is PI+VC main cohort, not f1
-    assert "CM005" not in F1_SUBJECT_NAMES
+def test_pi_vc_f1_paradigm_mapped():
+    # PI+VC_f1 was wired into PARADIGM_MAP in commit 1c8b03e; the legacy
+    # F1_SUBJECT_NAMES skip list was retired in favor of using the
+    # subject's training_group from subjects.parquet.
+    assert ("PI+VC_f1", "Fixed Cue 1 Twist") in PARADIGM_MAP
+    assert PARADIGM_MAP[("PI+VC_f1", "Fixed Cue 1 Twist")] == "PI+VC f1 acquisition"
