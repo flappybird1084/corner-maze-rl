@@ -2,32 +2,29 @@
 
 ## Current Reward Values
 
+Sourced from `src/corner_maze_rl/env/constants.py` and `_compute_reward` in `src/corner_maze_rl/env/corner_maze_env.py`. Env source is authoritative — if this section drifts from the code again, fix the doc.
+
 | Constant | Value | Role |
 |----------|-------|------|
-| `FORWARD_SCR` | -0.001 | Step cost (forward) |
-| `TURN_SCR` | -0.005 | Step cost (turn) |
-| `WELL_REWARD_SCR` | +1.061 | Goal reward |
-| `WELL_EMPTY_SCR` | -0.005 | Wrong well penalty |
-| `INAPPROPRIATE_ACTION_SCR` | -0.005 | Wall bump penalty |
-| `TIME_OUT_SCR` | -1 | Episode timeout |
-| `TOO_LONG_IN_PHASE` | -0.001 | Phase overtime penalty |
-| `REVISIT_SCR` / `SAME_PLACE_SCR` | 0 | No cost for revisiting |
+| `STEP_FORWARD_COST` | -0.0005 | Base step cost for forward (action 2), pickup (action 3), and pause (action 4) |
+| `STEP_TURN_COST` | -0.001 | Base step cost for left/right turns (actions 0, 1) — 2× forward, discourages spinning |
+| `WELL_REWARD_SCR` | +1.061 | Added to the step cost when a PICKUP lands on the correct well |
+| *(none)* | 0 | Wrong-well penalty — `_compute_reward` adds no bonus for `"well_empty"`; only the base step cost is charged. The env returns the label as info but the magnitude is implicitly zero. |
+
+There are no `INAPPROPRIATE_ACTION_SCR`, `TIME_OUT_SCR`, `TOO_LONG_IN_PHASE`, `REVISIT_SCR`, `SAME_PLACE_SCR`, or `TOO_LONG_SCR` constants in the env. Earlier versions of this doc referenced names from a now-replaced reward structure; they are kept out of this analysis.
 
 ---
 
 ## Issues Identified
 
-### 1. Oscillation Exploit
-`REVISIT_SCR = 0` and `SAME_PLACE_SCR = 0` mean an agent can turn back and forth in place indefinitely with only the tiny `-0.005` turn cost. A degenerate "spin in place until timeout" policy costs only `~0.005 * steps` and avoids exploration risk entirely.
+### 1. Oscillation / pause exploit
+The agent can pause (action 4) indefinitely with only the `-0.0005` per-step cost — the same as a forward step. Spinning in place is slightly more expensive at `-0.001` per turn. Neither action carries an explicit revisit penalty, so a "stall until timeout" policy is cheap. PPO / SR policies have shown this exploit in practice; consider adding an explicit pause/revisit penalty or a count-based novelty bonus (see recommendations).
 
-### 2. Turn-to-Forward Ratio (5:1)
-Turns cost 5x more than forward steps. This biases the agent toward long straight paths even when a turn would be the shortest route. Maze navigation inherently requires many turns.
+### 2. Turn-to-Forward Ratio (2:1)
+Turns cost 2× forward. This is the *intended* design — the asymmetry is there specifically to discourage in-place spinning. Earlier versions of this doc reported 5:1, which was a doc-internal error; the env has always been 2:1 since the current constants landed.
 
-### 3. Extremely Sparse Reward Signal
-The agent must navigate a complex maze with barriers, cue associations, and multiple phases, but only receives +1.061 upon reaching the correct well. Everything else is near-zero noise.
-
-### 4. `TOO_LONG_SCR = 55`
-This is imported but appears unused in the step function. If ever activated, it would be ~50x the goal reward and would dominate all learning signals.
+### 3. Extremely sparse reward signal
+The agent must navigate a complex maze with barriers, cue associations, and multiple phases, but only receives +1.061 upon reaching the correct well. Everything else is near-zero noise. This is the core motivator for the count-based exploration and PBRS recommendations below.
 
 ---
 
@@ -85,11 +82,9 @@ SB3 documentation explicitly recommends `VecNormalize` for PPO/A2C. Large reward
 |--------|----------|-----------|
 | Add count-based exploration bonus (`PositionBonus`) | **High** | Ecologically valid intrinsic motivation; no goal knowledge leaked |
 | Use `VecNormalize` or reward clipping | **High** | Prevents gradient explosion from scale mismatch |
-| Set `REVISIT_SCR = -0.002` | **Medium** | Prevents oscillation exploits |
-| Reduce turn-to-forward ratio to 2:1 | **Medium** | Current 5:1 biases against necessary turns |
+| Add explicit pause/revisit penalty (~`-0.002`) | **Medium** | Prevents the pause-until-timeout exploit (Issue 1) |
 | Consider Bootstrapped Reward Shaping | **Medium** | PBRS using agent's own learned V_hat — no a priori knowledge |
 | Consider RND or ICM curiosity | **Medium** | Stronger exploration signal; models novelty-seeking behavior |
-| Remove or fix `TOO_LONG_SCR = 55` | **Medium** | Dangerous if ever activated at current magnitude |
 | Consider minimum-time formulation (-1/step) | **Low** | Only if agent finds goal ≥10 times per 20k steps |
 | Implement HER with GoalEnv | **Low** | High effort, only for off-policy algorithms |
 | ~~Add PBRS with BFS-distance potential~~ | ~~N/A~~ | ~~Rejected: injects a priori goal knowledge, invalid for animal modeling~~ |

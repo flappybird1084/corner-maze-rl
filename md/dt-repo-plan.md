@@ -41,17 +41,15 @@ corner-maze-rl/
 ├── notebooks/                           # VS Code / local Jupyter — NOT Colab-in-browser
 │   ├── 01_explore_env.ipynb             # env walkthrough, manual control
 │   ├── 02_explore_yoked_data.ipynb      # load dataset, plot trajectories
-│   ├── 03_compute_returns.ipynb         # build reward + RTG cache
-│   ├── 04_train_dt.ipynb                # DT train + eval
-│   ├── 05_train_ppo.ipynb               # PPO baseline
-│   ├── 06_train_sr.ipynb                # SR baseline
-│   └── 07_compare_models.ipynb          # IQM, performance profiles, drawdown
+│   ├── 03_train_dt.ipynb                # DT train + eval
+│   ├── 04_train_ppo.ipynb               # PPO baseline
+│   ├── 05_train_sr.ipynb                # SR baseline
+│   └── 06_compare_models.ipynb          # IQM, performance profiles, drawdown
 ├── src/corner_maze_rl/
 │   ├── env/                             # trimmed env + constants + trial_seq
 │   ├── data/
 │   │   ├── load.py                      # DuckDB queries against 3-table dataset
-│   │   ├── compute_returns.py           # env-replay → reward, RTG (per-trial, ITI-start)
-│   │   ├── windows.py                   # context-window builder for DT
+│   │   ├── canonical.py                 # cue→north rotation utilities
 │   │   └── session_types.py             # 4 hardcoded paradigms; PI / VC / PI+VC / PI+VC_f1
 │   ├── encoders/
 │   │   ├── base.py                      # StateEncoder Protocol, CompositeEncoder
@@ -79,7 +77,7 @@ corner-maze-rl/
 │       ├── run_io.py                    # set_global_seed, save_run_config (port from seed_utils.py)
 │       └── git.py                       # capture commit SHA in run_config
 ├── scripts/
-│   ├── build_returns_dataset.py         # one-time: actions_with_returns.parquet
+│   ├── add_actions_to_reward.py         # one-shot: add actions_to_reward column to existing dataset
 │   └── train.py                         # CLI: --model {dt,ppo,sr} --session-type ... --seeds N
 ├── data/                                # gitignored; setup script downloads
 └── tests/
@@ -95,27 +93,44 @@ corner-maze-rl/
 - Every trial ends in either reward or stuck (no time-out kill of trials).
 - Wrong well **does not** end a trial; only correct well does.
 - Per-trial score: +1 if rat completed the trial without ever visiting a non-rewarded well, else 0. Max 32/session.
-- **The agent does not see this score.** The agent sees only the env's `step()` reward, which is currently:
-  - `STEP_FORWARD_COST = -0.0005`
-  - `STEP_TURN_COST = -0.001`
-  - `WELL_REWARD_SCR = 1.061` on correct well
-  - `-0.005` on empty/wrong well
+- **The agent does not see this score.** The agent sees only the env's `step()` reward, which is currently (matching `env/_compute_reward`):
+  - `STEP_FORWARD_COST = -0.0005` (applied to actions 2, 3, 4)
+  - `STEP_TURN_COST = -0.001` (applied to actions 0, 1; 2× forward to discourage spinning)
+  - `WELL_REWARD_SCR = +1.061` on correct well (added on top of the step cost)
+  - 0 on empty/wrong well (no explicit penalty in `_compute_reward`; just the base step cost)
 - Score is for human evaluation, not policy learning.
 
-### 4.2 Preprocessing pass (`compute_returns.py`)
-One-time, deterministic, replays each yoked session through `CornerMazeEnv` and adds two columns to a new `actions_with_returns.parquet`:
+### 4.2 Persisted structural countdown: `actions_to_reward`
+
+The yoked dataset stores **one int32 column** per row, `actions_to_reward`, in every `actions_*.parquet`. It is the count of action steps remaining until the next correct PICKUP (`action == 3 & rewarded == 1`); zero at the PICKUP itself. Purely structural — derivable from `(action, rewarded)`, identical across all cost configs.
 
 | Column | Description |
 |--------|-------------|
-| `reward` | Per-step scalar from `env.step()` (uses constants above). |
-| `return_to_go` | Sum of rewards from this step to **end of current trial** (ITI-start mode — see below). |
+| `actions_to_reward` | int32, count of remaining steps until the next correct PICKUP. Zero at the rewarded PICKUP. |
 
-**Per-trial RTG with ITI-start.** RTG is computed within the boundaries of `[ITI_start_t, trial_end_t]`. Reasoning:
-- Per-session RTG drowns goal credit in 32 trials of step costs.
-- Per-trial RTG resets at trial start, but agents trained that way sometimes get stuck in ITI (no reward credit available there).
-- ITI-start: include the ITI before the trial in the same RTG window. ITI traversal earns credit toward the upcoming trial reward → encourages forward movement through ITI.
+Wrong-well PICKUPs (action 3, rewarded 0) do not close a window — the counter keeps decrementing through them.
 
-Boundary detection: the env emits trial-phase tags via `_compute_session_scores()` and trial_tags. Bake those into the preprocessing pass.
+**Window definition (ITI-start, per-trial).** Window `i` covers `[step_after_PICKUP_{i-1}+1, PICKUP_i]` (inclusive of `PICKUP_i`), with window 0 starting at session step 0. Post-PICKUP exit actions (the LL/RR/F block emitted by `well_visit_actions`) fall into the *next* window — that's why ITI navigation earns credit toward the upcoming trial's reward.
+
+The column is computed once in `corner_maze_rl.yoking.build_dataset.compute_actions_to_reward` at aggregation time. The invariants — `actions_to_reward[-1] == 0` per session, `actions_to_reward == 0 ⇔ correct PICKUP` per row — are locked by `tests/test_yoked_dataset_invariants.py`.
+
+### 4.2.1 Deferred-cost design: magnitudes at token-gen time
+
+Per-step `reward` and per-trial RTG are **not** persisted. They are derived at token-generation time from a `CostConfig`:
+
+```python
+@dataclass
+class CostConfig:
+    forward_cost: float = -0.0005   # matches env/constants.py
+    turn_cost:    float = -0.001
+    pause_cost:   float = -0.0005   # _compute_reward charges pause as forward
+    well_reward:  float = +1.061
+    well_empty:   float =  0.0      # env has no empty-well penalty
+```
+
+Cost sweeps become a config edit — no parquet rebuild required. The token-gen step walks each session's `(action, rewarded)` columns, applies per-action costs from the config, computes a per-step `reward`, and (if the DT formulation requires it) a float-RTG suffix sum within each `actions_to_reward`-defined window. `actions_to_reward` itself may also be fed into the model as a positional conditioning signal — its structural invariance under cost sweeps is the point.
+
+Boundary detection: window starts are exactly where the previous row's `actions_to_reward` is 0; window ends are exactly where the current row's `actions_to_reward` is 0. No env replay needed.
 
 ### 4.3 Sparse-reward acknowledgement
 RTG signal is dominated by the +1.061 spike at trial end. Successful trials produce strongly positive RTG curves; failed trials produce flat slightly-negative RTG. DT learns to discriminate these regimes but credit assignment within a successful trial is coarse. We document this honestly and treat it as a teaching opportunity ("this is *why* DT papers use dense rewards").
@@ -452,20 +467,23 @@ The yoking pipeline lives in this repo at `src/corner_maze_rl/yoking/` (ported 2
 ```
 $CORNER_MAZE_ANALYSIS_DIR (upstream behavioral parquets)
                 ↓ corner-maze-build-yoked  (per-session actions → data/yoked/*.parquet)
-                ↓ corner-maze-build-dataset (normalize → 5-table layout)
+                ↓ corner-maze-build-dataset (normalize → 5-table layout + actions_to_reward column)
 data/yoked/dataset/
   ├── subjects.parquet
   ├── sessions.parquet                               # all phases
   ├── actions_synthetic_pretrial.parquet             # Acquisition only, synthetic pretrial — primary input
   ├── actions_real_pretrial.parquet                  # Acquisition only, real pretrial — alt variant
   └── actions_exposure.parquet                       # Exposure only (no pretrial concept)
-                ↓ scripts/build_returns_dataset.py    (this repo)
-data/yoked/dataset/actions_with_returns.parquet      (adds reward + RTG columns)
+
+All three actions_*.parquet carry an `actions_to_reward` int32 column
+(structural countdown to the next correct PICKUP — see §4.2). Per-step
+reward magnitudes are derived at token-gen time from a CostConfig — not
+persisted in any parquet (§4.2.1).
 ```
 
-`build_dataset.py` post-build assertions guarantee every action-table `session_id` has a matching `sessions.parquet` row with the correct phase. Diagnostics live in `yoking/diagnostics/` (`check_divergence.py`, `check_well_visits.py`, `check_contiguity.py`, `replay_session.py` — pygame, optional).
+`build_dataset.py` post-build assertions guarantee every action-table `session_id` has a matching `sessions.parquet` row with the correct phase, every session ends at a rewarded PICKUP, and `n_trials == n_rewards == len(trial_configs)` for every Acquisition row. The same invariants plus the `actions_to_reward` contract are locked by `tests/test_yoked_dataset_invariants.py`. Diagnostics live in `yoking/diagnostics/` (`check_divergence.py`, `check_well_visits.py`, `check_contiguity.py`, `replay_session.py` — pygame, optional).
 
-The new repo depends on `actions_with_returns.parquet`. The build script is one-time, deterministic, hashable — the dataset hash goes into every run_config.json so we know which dataset version a run was trained on.
+`scripts/add_actions_to_reward.py` exists for datasets aggregated before the column was wired into `build_dataset.py`. It's idempotent and obsolete on any fresh rebuild.
 
 ## 12. Environment integration
 
@@ -488,6 +506,9 @@ In priority order:
 
 ### Closed (this iteration)
 
+- ~~RTG storage design~~ — env-replay path (`compute_returns.py` + `actions_with_returns.parquet`) replaced 2026-05-11 by the **deferred-cost** design: persist `actions_to_reward` (int32) in `actions_*.parquet`, derive per-step `reward` and float RTG at token-gen from a runtime `CostConfig`. See §4.2 / §4.2.1.
+- ~~Session truncation~~ — every yoked session ends at its last rewarded PICKUP (`tests/test_yoked_dataset_invariants.py` locks this). 9 zero-reward sessions dropped from the dataset. Decided 2026-05-10.
+- ~~Manuscript subject roster~~ — the 48-subject canonical scope is in [README.md §Manuscript subject roster](../README.md#manuscript-subject-roster). 8 yoked-but-out-of-manuscript subjects retained in the dataset for completeness.
 - ~~Repo / package name~~ — repo `corner-maze-rl`, Python package `corner_maze_rl` (matches repo for student clarity). Decided 2026-05-05.
 - ~~PI+VC_f1 data~~ — separate subjects (CM057, CM058, CM059, CM060, CM061, CM063, CM064) using `Fixed Cue 1 Twist` session_type. **Resolved 2026-05-08:** plan's "not yet yoked" claim was wrong — yoking pipeline produced correct action sequences all along (trial_configs are read verbatim from upstream `trials.parquet`, which already encode f1-specific routes). The actual missing piece was the env-paradigm mapping `(PI+VC_f1, Fixed Cue 1 Twist) → "PI+VC f1 acquisition"` in `data/session_types.py`, now in place.
 - ~~`Fixed Cue 1 Twist` mapping~~ — only PI+VC_f1 has Twist sessions in the dataset; mapped to `PI+VC f1 acquisition`. PI/VC/PI+VC × Twist remain blank because those subjects don't have Twist data, not because they're TODO.
@@ -515,13 +536,13 @@ After (1) lands, these three are independent and parallelizable:
 
 After (4) lands:
 
-5. **`data/compute_returns.py`** + **`scripts/build_returns_dataset.py`** — replays yoked sessions through `CornerMazeEnv` to compute per-step `reward` and per-trial-with-ITI-start `return_to_go`. Cannot start until the env port (4) is callable as a Python module.
+5. **Token-gen helper** (~50 lines, location TBD — likely `data/tokens.py`) — at training time, walks each session's `(action, rewarded, actions_to_reward)` columns and a `CostConfig` to produce per-step `reward` and per-window float-RTG suffix sums. Doesn't depend on the env (cost values are config-driven). The structural `actions_to_reward` column is already persisted in the dataset; this step just applies magnitudes.
 
 **Phase 2 — first model (DT)**
 - `models/decision_transformer.py` (clean rewrite from `DTtrainer.ipynb`).
 - `train/runner.py` (adapt from `session_runner.py`).
 - `eval/rollout.py`, `eval/replay.py`.
-- Notebook 04 (DT train) + Notebook 03 (compute returns).
+- Notebook 03 (DT train).
 
 **Phase 3 — baselines**
 - `models/ppo.py`, `models/sr.py` (adapt from `custom_rl.py`).
@@ -610,7 +631,7 @@ Pipeline ported in-tree 2026-05-08. Dataset regenerated to add `actions_exposure
 | P1 | port | `yoking/build_yoked.py` | `src/corner_maze_rl/yoking/build_yoked.py` | Filename now suffixes `_synthetic`/`_real` for Acquisition outputs. |
 | P1 | rewrite | `yoking/build_dataset.py` | `src/corner_maze_rl/yoking/build_dataset.py` | Now emits 5 tables (synth/real/exposure split by `session_phase`); adds post-build assertions. |
 | P1 | port | `yoking/check_divergence.py`, `check_well_visits.py`, `check_contiguity.py`, `replay_session.py`, `replay_divergence_log.md` | `src/corner_maze_rl/yoking/diagnostics/` | Optional pygame dep for replay. |
-| P1 | regen | `data/yoked/dataset/{subjects,sessions,actions_synthetic_pretrial,actions_real_pretrial,actions_exposure}.parquet` | (gitignored output) | 70 subjects, 688 sessions (551 Acq + 137 Exp). 1 missing Exposure (CM008 1e: no upstream coords). |
+| P1 | regen | `data/yoked/dataset/{subjects,sessions,actions_synthetic_pretrial,actions_real_pretrial,actions_exposure}.parquet` | (gitignored output) | 70 subjects, 679 sessions (549 Acq + 130 Exp) after the 2026-05-10 truncation. All `actions_*.parquet` carry an `actions_to_reward` int32 column (§4.2). 1 missing Exposure (CM008 1e: no upstream coords); 9 zero-reward sessions dropped by truncation. |
 | — | defer | `yoking/rotate_to_canonical.py`, analysis/replay tools | — | Port when SR/canonical-orientation work resumes. |
 
 ### 16.3 Encoders
@@ -627,7 +648,7 @@ Pipeline ported in-tree 2026-05-08. Dataset regenerated to add `actions_exposure
 
 | Phase | Action | Source (legacy) | Target (new) | Notes |
 |-------|--------|-----------------|--------------|-------|
-| P2 | port | `2S2C_task/colab/DTtrainer.ipynb` cells 1–2 | `src/corner_maze_rl/models/decision_transformer.py` + `data/windows.py` | DT model + dataloader template; rewrite per dt-repo-plan §6.2 (real RTG, configurable pos encoding, no action-weights hack). |
+| P2 | port | `2S2C_task/colab/DTtrainer.ipynb` cells 1–2 | `src/corner_maze_rl/models/decision_transformer.py` + token-gen helper (location TBD; see §14 Phase 1.5) | DT model + dataloader template; rewrite per dt-repo-plan §6.2 (real RTG via runtime CostConfig, configurable pos encoding, no action-weights hack). |
 | P3 | port | `src/rl/custom_rl.py::PPOAgent` | `src/corner_maze_rl/models/ppo.py` | |
 | P3 | port | `src/rl/custom_rl.py::SRAgent` | `src/corner_maze_rl/models/sr.py` | |
 | P3 | optional | `src/rl/sb3_agents.py` | `src/corner_maze_rl/models/sb3_ppo.py` | Optional SB3 path for advanced students. |
