@@ -6,15 +6,17 @@ Checks that:
 - PICKUP actions move from corner to well (manhattan=1 diagonal OK)
 - Direction updates are consistent with the action taken
 
+Reads from the consolidated yoked dataset at ``data/yoked/dataset/``.
+
 Usage:
-    python yoking/check_contiguity.py data/yoked/CM024_1e.parquet
-    python yoking/check_contiguity.py --subject CM024
-    python yoking/check_contiguity.py --all
+    python -m corner_maze_rl.yoking.diagnostics.check_contiguity --subject CM024 --session 1e
+    python -m corner_maze_rl.yoking.diagnostics.check_contiguity --subject CM024
+    python -m corner_maze_rl.yoking.diagnostics.check_contiguity --all
+    python -m corner_maze_rl.yoking.diagnostics.check_contiguity --all --variant real
 """
 import argparse
-import os
-from glob import glob
 
+import duckdb
 import pandas as pd
 
 # Action constants
@@ -31,13 +33,75 @@ DIR_TO_DELTA = {0: (1, 0), 1: (0, 1), 2: (-1, 0), 3: (0, -1)}
 ACT_NAMES = {0: 'L', 1: 'R', 2: 'F', 3: 'PICKUP', 4: 'PAUSE'}
 DIR_NAMES = {0: 'E', 1: 'S', 2: 'W', 3: 'N'}
 
+# Variant → action-table filename
+_ACTION_TABLE = {
+    'synthetic': 'actions_synthetic_pretrial.parquet',
+    'real':      'actions_real_pretrial.parquet',
+    'exposure':  'actions_exposure.parquet',
+}
 
-def check_contiguity(parquet_path, verbose=False):
-    """Validate contiguity of a yoked parquet file.
+
+def _variant_for_session_number(session_number: str) -> str:
+    return 'exposure' if str(session_number).endswith('e') else 'synthetic'
+
+
+def list_sessions(dataset_dir, subject=None, session=None, variant='auto'):
+    """Return [(session_id, subject_name, session_number, variant), ...].
+
+    ``variant='auto'``: synthetic for Acquisition, exposure for Exposure.
+    ``variant in ('synthetic','real','exposure')``: restrict to that variant.
+    ``variant='all'``: synthetic + real + exposure (one row per (sid, variant)).
+    """
+    where = ['1=1']
+    if subject:
+        where.append(f"sub.subject_name = '{subject}'")
+    if session is not None:
+        where.append(f"s.session_number = '{session}'")
+    where_sql = ' AND '.join(where)
+    rows = duckdb.sql(f"""
+        SELECT s.session_id, sub.subject_name, s.session_number, s.session_phase
+        FROM '{dataset_dir}/sessions.parquet' s
+        JOIN '{dataset_dir}/subjects.parquet' sub USING (subject_id)
+        WHERE {where_sql}
+        ORDER BY sub.subject_name, s.session_number
+    """).fetchall()
+
+    out = []
+    for sid, sub_name, sess_num, phase in rows:
+        is_exp = (phase == 'Exposure')
+        if variant == 'all':
+            if is_exp:
+                out.append((sid, sub_name, sess_num, 'exposure'))
+            else:
+                out.append((sid, sub_name, sess_num, 'synthetic'))
+                out.append((sid, sub_name, sess_num, 'real'))
+        elif variant == 'auto':
+            out.append((sid, sub_name, sess_num, 'exposure' if is_exp else 'synthetic'))
+        elif variant == 'exposure':
+            if is_exp:
+                out.append((sid, sub_name, sess_num, 'exposure'))
+        else:  # 'synthetic' or 'real'
+            if not is_exp:
+                out.append((sid, sub_name, sess_num, variant))
+    return out
+
+
+def load_session(session_id, variant, dataset_dir):
+    """Load action rows for one session from the consolidated dataset."""
+    table = _ACTION_TABLE[variant]
+    return duckdb.sql(f"""
+        SELECT step, action, grid_x, grid_y, direction, rewarded
+        FROM '{dataset_dir}/{table}'
+        WHERE session_id = {session_id}
+        ORDER BY step
+    """).fetchdf()
+
+
+def check_contiguity(df: pd.DataFrame, verbose: bool = False) -> list[tuple[int, str]]:
+    """Validate contiguity of one session's action DataFrame.
 
     Returns list of (step, issue_description) tuples for each violation found.
     """
-    df = pd.read_parquet(parquet_path)
     actions = df['action'].values
     gxs = df['grid_x'].values
     gys = df['grid_y'].values
@@ -118,42 +182,49 @@ def main():
     parser = argparse.ArgumentParser(
         description='Validate contiguity of yoked action sequences.',
     )
-    parser.add_argument('parquet', nargs='?', type=str, default=None,
-                        help='Path to a single parquet file.')
     parser.add_argument('--subject', type=str, default=None,
-                        help='Check all sessions for a subject.')
+                        help='Subject name (e.g., CM024). Required unless --all.')
+    parser.add_argument('--session', type=str, default=None,
+                        help='Session number (e.g., 1, 2e). Optional; if omitted, all sessions for the subject.')
+    parser.add_argument('--variant', type=str, default='auto',
+                        choices=['auto', 'synthetic', 'real', 'exposure', 'all'],
+                        help="Action-table variant. 'auto' (default): synthetic for "
+                             "Acquisition, exposure for Exposure. 'all': both pretrial variants for Acquisition.")
     parser.add_argument('--all', action='store_true',
-                        help='Check all parquet files in data/yoked/.')
-    parser.add_argument('--dir', type=str, default='data/yoked',
-                        help='Directory containing parquet files.')
+                        help='Check every session in the dataset.')
+    parser.add_argument('--dataset-dir', type=str, default='data/yoked/dataset',
+                        help='Consolidated dataset directory.')
     parser.add_argument('-v', '--verbose', action='store_true',
-                        help='Show all issues, not just the first per file.')
+                        help='Show all issues, not just the first per session.')
     args = parser.parse_args()
 
-    if args.parquet:
-        files = [args.parquet]
-    elif args.all or args.subject:
-        pattern = os.path.join(args.dir, '*.parquet')
-        files = sorted(glob(pattern))
-        if args.subject:
-            files = [f for f in files
-                     if os.path.basename(f).startswith(args.subject + '_')]
-    else:
-        parser.error('Specify a parquet file, --subject, or --all')
+    if not args.all and args.subject is None:
+        parser.error('Specify --subject (and optionally --session) or --all')
+
+    sessions = list_sessions(
+        args.dataset_dir,
+        subject=args.subject if not args.all or args.subject else None,
+        session=args.session,
+        variant=args.variant,
+    )
+    if not sessions:
+        print('No matching sessions found.')
+        return
 
     n_ok = 0
     n_fail = 0
 
-    for fpath in files:
-        name = os.path.basename(fpath).replace('.parquet', '')
-        issues = check_contiguity(fpath, verbose=args.verbose)
+    for sid, sub_name, sess_num, variant in sessions:
+        df = load_session(sid, variant, args.dataset_dir)
+        label = f"{sub_name} {sess_num} ({variant})"
+        issues = check_contiguity(df, verbose=args.verbose)
 
         if not issues:
             n_ok += 1
-            print(f'  OK  {name}')
+            print(f'  OK  {label}')
         else:
             n_fail += 1
-            print(f'  FAIL {name}: {len(issues)} issue(s)')
+            print(f'  FAIL {label}: {len(issues)} issue(s)')
             if args.verbose:
                 for step, desc in issues:
                     print(f'    step {step}: {desc}')
@@ -161,8 +232,8 @@ def main():
                 step, desc = issues[0]
                 print(f'    first: step {step}: {desc}')
 
-    if len(files) > 1:
-        print(f'\n{n_ok} ok, {n_fail} failed out of {len(files)} sessions')
+    if len(sessions) > 1:
+        print(f'\n{n_ok} ok, {n_fail} failed out of {len(sessions)} sessions')
 
 
 if __name__ == '__main__':

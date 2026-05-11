@@ -1,8 +1,9 @@
 """Replay a yoked action sequence in the CornerMazeEnv with pygame rendering.
 
-Reads a yoked parquet file from data/yoked/, auto-configures the environment
-from stored metadata (session type, cue/goal orientation, trial configs),
-and steps through the action sequence with play/pause/step controls.
+Reads one session from the consolidated dataset at ``data/yoked/dataset/``,
+auto-configures the environment from stored metadata (session type, cue/goal
+orientation, trial configs), and steps through the action sequence with
+play/pause/step controls.
 
 Controls:
     - Click play/pause button or press SPACE to toggle playback
@@ -10,15 +11,16 @@ Controls:
     - Press Q or close window to quit
 
 Usage:
-    python yoking/replay_session.py data/yoked/CM016_5.parquet --delay 33
+    python -m corner_maze_rl.yoking.diagnostics.replay_session --subject CM016 --session 5 --delay 33
+    python -m corner_maze_rl.yoking.diagnostics.replay_session --subject CM024 --session 1e
+    python -m corner_maze_rl.yoking.diagnostics.replay_session --subject CM016 --session 5 --variant real
 """
 import argparse
 import json
-import os
 
+import duckdb
 import numpy as np
 import pandas as pd
-import pyarrow.parquet as pq
 
 from corner_maze_rl.env.corner_maze_env import CornerMazeEnv
 from corner_maze_rl.env.constants import STATE_TRIAL, STATE_ITI, STATE_PRETRIAL
@@ -76,13 +78,71 @@ def _inject_trial_configs(env, trial_configs):
     env.cur_cell = type(env.grid.get(*env.agent_pos)).__name__
 
 
-def load_yoked_parquet(path):
-    """Load a yoked parquet file and return (actions_df, metadata_dict)."""
-    pf = pq.read_table(path)
-    meta_raw = pf.schema.metadata or {}
-    meta = {k.decode(): v.decode() for k, v in meta_raw.items()
-            if k != b'pandas' and k != b'ARROW:schema'}
-    actions_df = pf.to_pandas()
+_ACTION_TABLE = {
+    'synthetic': 'actions_synthetic_pretrial.parquet',
+    'real':      'actions_real_pretrial.parquet',
+    'exposure':  'actions_exposure.parquet',
+}
+
+
+def load_yoked_session(subject, session, variant, dataset_dir):
+    """Load one session from the consolidated dataset.
+
+    Returns (actions_df, metadata_dict). The metadata dict mirrors the
+    legacy parquet-file-metadata format used by the rest of this module.
+    """
+    row = duckdb.sql(f"""
+        SELECT s.session_id, sub.subject_name, s.session_number, s.session_type,
+               s.session_phase, s.cue_goal_orientation, s.n_actions,
+               s.n_rewards, s.n_trials, s.trial_configs, s.seed
+        FROM '{dataset_dir}/sessions.parquet' s
+        JOIN '{dataset_dir}/subjects.parquet' sub USING (subject_id)
+        WHERE sub.subject_name = '{subject}' AND s.session_number = '{session}'
+    """).fetchone()
+    if row is None:
+        raise SystemExit(
+            f"No session found for subject={subject!r} session={session!r} "
+            f"in {dataset_dir}/sessions.parquet"
+        )
+    (session_id, subject_name, session_number, session_type, session_phase,
+     cue_goal_orientation, n_actions, n_rewards, n_trials, trial_configs_json,
+     seed) = row
+
+    is_exp = session_phase == 'Exposure'
+    if variant == 'auto':
+        variant = 'exposure' if is_exp else 'synthetic'
+    if is_exp and variant != 'exposure':
+        raise SystemExit(
+            f"{subject} {session_number} is an Exposure session — use --variant exposure"
+        )
+    if not is_exp and variant == 'exposure':
+        raise SystemExit(
+            f"{subject} {session_number} is Acquisition — use --variant synthetic or real"
+        )
+
+    table = _ACTION_TABLE[variant]
+    actions_df = duckdb.sql(f"""
+        SELECT step, action, grid_x, grid_y, direction, rewarded
+        FROM '{dataset_dir}/{table}'
+        WHERE session_id = {session_id}
+        ORDER BY step
+    """).fetchdf()
+
+    meta = {
+        'subject': subject_name,
+        'session_number': session_number,
+        'session_type': session_type,
+        'session_phase': session_phase,
+        'session_id': str(session_id),
+        'cue_goal_orientation': cue_goal_orientation,
+        'seed': str(seed),
+        'pretrial_variant': variant,
+        'n_actions': str(int(n_actions)),
+        'n_rewards': str(int(n_rewards)),
+    }
+    if trial_configs_json and trial_configs_json != '[]':
+        meta['trial_configs'] = trial_configs_json
+        meta['n_trials'] = str(int(n_trials))
     return actions_df, meta
 
 
@@ -161,13 +221,23 @@ def main():
     parser = argparse.ArgumentParser(
         description='Replay a yoked action sequence with play/pause controls.',
     )
-    parser.add_argument('parquet', type=str, help='Path to a yoked parquet file.')
+    parser.add_argument('--subject', type=str, required=True,
+                        help='Subject name (e.g., CM016).')
+    parser.add_argument('--session', type=str, required=True,
+                        help='Session number (e.g., 5 or 1e).')
+    parser.add_argument('--variant', type=str, default='auto',
+                        choices=['auto', 'synthetic', 'real', 'exposure'],
+                        help="Action-table variant. 'auto' (default): synthetic for "
+                             "Acquisition, exposure for Exposure.")
+    parser.add_argument('--dataset-dir', type=str, default='data/yoked/dataset',
+                        help='Consolidated dataset directory.')
     parser.add_argument('--delay', type=int, default=50,
                         help='Delay between actions in ms during playback (default: 50).')
     args = parser.parse_args()
 
-    # Load data
-    actions_df, meta = load_yoked_parquet(args.parquet)
+    actions_df, meta = load_yoked_session(
+        args.subject, args.session, args.variant, args.dataset_dir,
+    )
     subject = meta.get('subject', '?')
     session_number = meta.get('session_number', '?')
     session_phase = meta.get('session_phase', '')
