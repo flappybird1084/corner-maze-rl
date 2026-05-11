@@ -44,39 +44,25 @@ The full chain — yoking pipeline → action stream → env replay → training
 — stays aligned as long as ``trial_configs`` and the positions in the
 action stream are rotated by the **same R**.
 
-There are two valid storage modes:
+The yoked dataset stores **raw** coords and **raw** ``trial_configs``;
+canonicalization happens at consume time. Consumers (the 02 replay
+notebook, the future token-gen step, ad-hoc analysis) call
+``canonicalize_session(trial_configs, actions_df)`` to rotate both
+together, then pass the rotated ``trial_configs`` into env kwargs.
 
-1. **Raw on disk, canonicalize at consume time** (default):
-   ``actions_*.parquet`` holds the rat's original coords, ``sessions.parquet``
-   holds original ``trial_configs``. A consumer (the 02 notebook with the
-   checkbox, or a future training rollout) calls
-   ``canonicalize_session(trial_configs, actions_df)`` to rotate both
-   together, then passes the rotated ``trial_configs`` into the env
-   kwargs.
+Consume-side recipe::
 
-2. **Pre-rotated on disk** (``build_returns_dataset.py --canonicalize``):
-   ``actions_with_returns.parquet`` has rotated ``grid_x / grid_y /
-   direction`` plus a ``canonical_R`` column per row. The rotated
-   ``trial_configs`` are **not** persisted — consume-side, you rebuild
-   them with ``rotate_trial_configs(raw_tc, R)`` (where ``raw_tc`` comes
-   from ``sessions.parquet`` and ``R`` from the parquet's
-   ``canonical_R`` column). This is a zero-cost recompute.
-
-Consume-side recipe (mode 2)::
-
-    R = int(actions_with_returns_df["canonical_R"].iloc[0])
-    raw_tc = json.loads(sessions_row["trial_configs"])
-    rotated_tc = rotate_trial_configs(raw_tc, R)
+    rotated_tc, rotated_df, R = canonicalize_session(trial_configs, actions_df)
     env_kwargs = map_session_to_env_kwargs(
         ...,
         trial_configs=rotated_tc,
         start_goal_location=GOAL_IDX_TO_DIR[int(rotated_tc[0][2])],
     )
 
-In either mode, the env-replay parity invariant holds: env built with
-``rotated_tc`` produces ``(agent_pos, agent_dir)`` matching the rotated
-``(grid_x, grid_y, direction)`` at every step. Tests in
-``tests/test_canonical.py`` enforce both directions of this chain.
+The env built with ``rotated_tc`` produces ``(agent_pos, agent_dir)``
+matching the rotated ``(grid_x, grid_y, direction)`` at every step.
+Tests in ``tests/test_canonical.py`` enforce both directions of this
+chain.
 """
 from __future__ import annotations
 

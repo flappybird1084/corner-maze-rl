@@ -98,3 +98,59 @@ def test_no_zero_reward_sessions_in_action_tables():
         assert zeros.empty, (
             f"{table}: zero-reward sessions present: {zeros['session_id'].tolist()}"
         )
+
+
+# ---------------------------------------------------------------------------
+# actions_to_reward column invariants (cost-agnostic structural countdown)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("table", ACTION_TABLES)
+def test_actions_to_reward_dtype_integer(table):
+    """The actions_to_reward column must be integer-typed."""
+    path = _require(DATASET_DIR / f"{table}.parquet")
+    dtype_row = duckdb.sql(
+        f"""
+        SELECT column_type FROM (DESCRIBE SELECT * FROM '{path}')
+        WHERE column_name = 'actions_to_reward'
+        """
+    ).fetchone()
+    assert dtype_row is not None, f"{table}: missing actions_to_reward column"
+    assert "INT" in dtype_row[0].upper(), (
+        f"{table}: actions_to_reward must be integer, got {dtype_row[0]!r}"
+    )
+
+
+@pytest.mark.parametrize("table", ACTION_TABLES)
+def test_actions_to_reward_zero_at_session_end(table):
+    """Last row of every session must have actions_to_reward == 0."""
+    path = _require(DATASET_DIR / f"{table}.parquet")
+    bad = duckdb.sql(
+        f"""
+        SELECT session_id, actions_to_reward
+        FROM '{path}'
+        QUALIFY ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY step DESC) = 1
+        """
+    ).fetchdf()
+    bad = bad[bad["actions_to_reward"] != 0]
+    assert bad.empty, (
+        f"{table}: {len(bad)} sessions whose last row has actions_to_reward != 0: "
+        f"{bad['session_id'].tolist()[:5]}"
+    )
+
+
+@pytest.mark.parametrize("table", ACTION_TABLES)
+def test_actions_to_reward_zero_iff_correct_pickup(table):
+    """actions_to_reward == 0 ⇔ (action == 3 AND rewarded == 1)."""
+    path = _require(DATASET_DIR / f"{table}.parquet")
+    mismatch = duckdb.sql(
+        f"""
+        SELECT session_id, step, action, rewarded, actions_to_reward
+        FROM '{path}'
+        WHERE (actions_to_reward = 0) != (action = 3 AND rewarded = 1)
+        LIMIT 5
+        """
+    ).fetchdf()
+    assert mismatch.empty, (
+        f"{table}: {len(mismatch)} rows violate "
+        f"actions_to_reward == 0 ⇔ correct PICKUP. Examples:\n{mismatch.to_string(index=False)}"
+    )

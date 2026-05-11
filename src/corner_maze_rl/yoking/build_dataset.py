@@ -24,10 +24,34 @@ import os
 from glob import glob
 
 import duckdb
+import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 
 from .data_loader import _parquet
+
+
+def compute_actions_to_reward(action: np.ndarray, rewarded: np.ndarray) -> np.ndarray:
+    """For each row, count of action steps remaining until the next correct
+    PICKUP (``action == 3 & rewarded == 1``). Zero at the rewarded PICKUP itself.
+
+    Pure structural — cost-agnostic. Requires that the session ends at a
+    correct PICKUP (the post-truncation invariant); otherwise raises.
+    """
+    pickup = (action == 3) & (rewarded == 1)
+    n = len(action)
+    if n == 0:
+        return np.empty(0, dtype=np.int32)
+    # For each t, find min index ≥ t with pickup True. Done via reverse-cummin.
+    indices = np.where(pickup, np.arange(n), n)
+    next_pickup = np.minimum.accumulate(indices[::-1])[::-1]
+    if (next_pickup >= n).any():
+        bad = int(np.where(next_pickup >= n)[0][0])
+        raise ValueError(
+            f"compute_actions_to_reward: row {bad} has no following rewarded PICKUP; "
+            "session must end at action==3 & rewarded==1"
+        )
+    return (next_pickup - np.arange(n)).astype(np.int32)
 
 
 def _read_session_parquet(fpath):
@@ -99,6 +123,10 @@ def main():
         session_id = int(meta['session_id'])
         actions_df = actions_df.copy()
         actions_df['session_id'] = session_id
+        actions_df['actions_to_reward'] = compute_actions_to_reward(
+            actions_df['action'].to_numpy(),
+            actions_df['rewarded'].to_numpy(),
+        )
         buckets[bucket].append(actions_df)
 
         # Record session metadata once (synthetic and real share the same upstream session).
@@ -162,7 +190,7 @@ def main():
 
     # ── Concat + sort actions per bucket ────────────────────────
     action_cols = ['session_id', 'step', 'action', 'grid_x', 'grid_y',
-                   'direction', 'rewarded']
+                   'direction', 'rewarded', 'actions_to_reward']
     output_actions = {}
     for bucket, parts in buckets.items():
         if not parts:
