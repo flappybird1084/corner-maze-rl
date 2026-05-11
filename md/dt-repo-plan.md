@@ -337,6 +337,8 @@ Treat any unmapped (group, yoked_session_type) pair as "skip with warning" so th
 
 **One rat per training run.** The runner takes a `--subject CM###` flag; the chosen rat must belong to the chosen training group's roster (see [maze-behavior-spec.md §Subject IDs](maze-behavior-spec.md)). Nothing is special about any single rat — students pick from the group roster, and reproducibility hinges on (subject, seed, dataset_hash) being captured in `run_config.json`.
 
+**Manuscript scope: 48 subjects.** The canonical roster — and the rats whose behavior will be published in the forthcoming corner-maze behavioral manuscript — is the 48-subject list in [README §Manuscript subject roster](../README.md#manuscript-subject-roster). The yoked dataset currently contains 56 subjects; the 8 extras (PI: CM030, CM032, CM033 / PI+VC_f1: CM059 / VC: CM028, CM034, CM039, CM048) are yoked-but-out-of-scope and should not be selected for training runs, eval cells, or published comparisons. When `data/yoked/dataset/` is rebuilt for student release, restrict the build to the 48 manuscript subjects.
+
 **Group/subject must match — enforced, not just convention.** A PI+VC subject must run the PI+VC sequence; a VC subject must run the VC sequence; etc. The runner reads `subjects.parquet` (legacy field: `training_group`), looks up the `--subject`'s group, and:
 
 - If `--training-group` is omitted, infer it from the subject's row.
@@ -353,7 +355,7 @@ A future "batch design" mode could train on multiple rats jointly within one gro
 | `pi_vc` (default) | `PI+VC` | ✅ available | Most-tested data path. |
 | `pi` | `PI` | ✅ available | |
 | `vc` | `VC` | ✅ available | |
-| `pi_vc_f1` | `PI+VC_f1` (CM057, CM058, CM059, CM060, CM061, CM063, CM064) | ✅ available | 68 Acquisition + 14 Exposure sessions; `Fixed Cue 1 Twist` → `PI+VC f1 acquisition`. |
+| `pi_vc_f1` | `PI+VC_f1` (manuscript: CM057, CM058, CM060, CM061, CM063, CM064; **CM059 yoked but out of manuscript scope**) | ✅ available | 68 Acquisition + 14 Exposure sessions in dataset; `Fixed Cue 1 Twist` → `PI+VC f1 acquisition`. |
 
 ### 9.3 `data/session_types.py` structure
 

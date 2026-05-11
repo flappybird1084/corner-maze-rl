@@ -16,6 +16,8 @@ A teaching repo for offline / behavior-cloning-style RL on a real neuroscience t
 
 ## Subjects and yoked data
 
+> **Manuscript scope.** The canonical roster for yoking and training is **48 subjects** — the rats whose behavior will be published in the forthcoming corner-maze behavioral manuscript. The yoked dataset currently contains 56 subjects; 8 (marked **†** below) are present from earlier yoking runs but are **out of manuscript scope** and should not be used for new training runs, eval cells, or published comparisons. See [Manuscript subject roster](#manuscript-subject-roster) below.
+
 The yoked dataset lives at `data/yoked/dataset/` (gitignored; populated via `scripts/setup_data.sh` or rebuilt from upstream with `corner-maze-build-dataset`). It currently contains:
 
 | Training group | Subjects | Primary acquisition session_type | Acquisition sessions | Exposure sessions |
@@ -40,15 +42,29 @@ Plus `subjects.parquet` (56 rows) and `sessions.parquet` (531 rows: 422 Acquisit
 
 Pass any of these to the runner via `--subject <name>`. Format: `name (subject_id, AcquisitionSessions + ExposureSessions)`. Subject IDs are upstream join keys; you don't usually pass them directly.
 
-**PI** (15 subjects, ids 67–98): CM023 (67, 6A+2E), CM024 (69, 6A+2E), CM027 (68, 7A+2E), CM030 (74, 13A+2E), CM032 (77, 20A+2E), CM033 (79, 19A+2E), CM036 (78, 12A+2E), CM037 (80, 4A+2E), CM046 (90, 6A+2E), CM049 (93, 5A+2E), CM050 (94, 3A+2E), CM051 (95, 5A+2E), CM052 (96, 5A+2E), CM053 (97, 5A+1E), CM054 (98, 5A+2E)
+**PI** (15 subjects, ids 67–98): CM023 (67, 6A+2E), CM024 (69, 6A+2E), CM027 (68, 7A+2E), CM030**†** (74, 13A+2E), CM032**†** (77, 20A+2E), CM033**†** (79, 19A+2E), CM036 (78, 12A+2E), CM037 (80, 4A+2E), CM046 (90, 6A+2E), CM049 (93, 5A+2E), CM050 (94, 3A+2E), CM051 (95, 5A+2E), CM052 (96, 5A+2E), CM053 (97, 5A+1E), CM054 (98, 5A+2E)
 
 **PI+VC** (17 subjects, ids 47–63): CM000 (47, 7A+2E), CM001 (48, 6A+2E), CM002 (49, 7A+1E), CM003 (50, 8A+2E), CM004 (51, 8A+2E), CM005 (52, 6A+2E), CM006 (53, 3A+2E), CM007 (54, 9A+2E), **CM008\*** (55, 3A+1E), CM009 (56, 7A+2E), CM010 (57, 5A+2E), CM011 (58, 5A+2E), CM014 (59, 10A+2E), CM015 (61, 11A+2E), CM016 (63, 5A+2E), CM017 (60, 9A+2E), CM018 (62, 9A+2E)
 
-**PI+VC_f1** (7 subjects, ids 123–130): CM057 (123, 22A+2E), CM058 (124, 8A+2E), CM059 (125, 12A+2E), CM060 (126, 5A+2E), CM061 (127, 3A+2E), CM063 (129, 7A+2E), CM064 (130, 11A+2E)
+**PI+VC_f1** (7 subjects, ids 123–130): CM057 (123, 22A+2E), CM058 (124, 8A+2E), CM059**†** (125, 12A+2E), CM060 (126, 5A+2E), CM061 (127, 3A+2E), CM063 (129, 7A+2E), CM064 (130, 11A+2E)
 
-**VC** (17 subjects, ids 70–100): CM025 (71, 7A+2E), CM026 (73, 5A+2E), CM028 (70, 9A+2E), CM031 (75, 9A+2E), CM034 (81, 9A+2E), CM035 (76, 8A+2E), CM038 (82, 6A+2E), CM039 (83, 5A+2E), CM040 (84, 7A+2E), CM041 (85, 6A+2E), CM042 (86, 5A+2E), CM043 (87, 6A+2E), CM044 (88, 5A+2E), CM045 (89, 7A+2E), CM048 (92, 6A+2E), CM055 (99, 8A+2E), CM056 (100, 7A+2E)
+**VC** (17 subjects, ids 70–100): CM025 (71, 7A+2E), CM026 (73, 5A+2E), CM028**†** (70, 9A+2E), CM031 (75, 9A+2E), CM034**†** (81, 9A+2E), CM035 (76, 8A+2E), CM038 (82, 6A+2E), CM039**†** (83, 5A+2E), CM040 (84, 7A+2E), CM041 (85, 6A+2E), CM042 (86, 5A+2E), CM043 (87, 6A+2E), CM044 (88, 5A+2E), CM045 (89, 7A+2E), CM048**†** (92, 6A+2E), CM055 (99, 8A+2E), CM056 (100, 7A+2E)
 
-<sup>Subjects with `1E` rather than `2E` reflect upstream reality (only one Exposure session was recorded), except **CM008\***, where the second Exposure session exists upstream but is missing coordinate tracking — see [Known data gaps](#known-data-gaps) below. Subject IDs are interleaved across groups because they reflect experimental-cohort order, not group membership.</sup>
+<sup>Subjects with `1E` rather than `2E` reflect upstream reality (only one Exposure session was recorded), except **CM008\***, where the second Exposure session exists upstream but is missing coordinate tracking — see [Known data gaps](#known-data-gaps) below. Subject IDs are interleaved across groups because they reflect experimental-cohort order, not group membership. Subjects marked **†** are present in the dataset but **out of manuscript scope** — see [Manuscript subject roster](#manuscript-subject-roster) below.</sup>
+
+### Manuscript subject roster
+
+The forthcoming behavioral manuscript publishes results on **48 of the 56 yoked subjects**. New training runs, default rosters, and any published eval comparisons should use only these 48; the other 8 (marked **†** above) are kept in the dataset for completeness but excluded from the manuscript scope.
+
+| Training group | Manuscript subjects | Count | Excluded (in dataset, not in manuscript) |
+|---|---|---:|---|
+| **PI** | CM023, CM024, CM027, CM036, CM037, CM046, CM049, CM050, CM051, CM052, CM053, CM054 | 12 | CM030, CM032, CM033 |
+| **PI+VC** | CM000, CM001, CM002, CM003, CM004, CM005, CM006, CM007, CM008, CM009, CM010, CM011, CM014, CM015, CM016, CM017, CM018 | 17 | *(none)* |
+| **PI+VC_f1** | CM057, CM058, CM060, CM061, CM063, CM064 | 6 | CM059 |
+| **VC** | CM025, CM026, CM031, CM035, CM038, CM040, CM041, CM042, CM043, CM044, CM045, CM055, CM056 | 13 | CM028, CM034, CM039, CM048 |
+| **Total** | | **48** | **8** |
+
+When rebuilding `data/yoked/dataset/` from upstream for student release, restrict to these 48 subjects. The yoking pipeline can still build the excluded 8 on demand (`corner-maze-build-yoked --subject <ID>`); they're simply not part of the default ship.
 
 ### Known data gaps
 
